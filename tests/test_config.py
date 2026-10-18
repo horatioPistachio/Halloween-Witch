@@ -52,6 +52,17 @@ def test_invalid_vad_rejected():
         load_settings(environ={**KEY_ENV, "WITCH_VAD": "bogus"})
 
 
+def test_persona_defaults_to_kids_and_cli_overrides_env():
+    assert load_settings(environ=KEY_ENV).persona == "kids"
+    assert load_settings(environ={**KEY_ENV, "WITCH_PERSONA": "evil"}).persona == "evil"
+    assert load_settings(persona="kids", environ={**KEY_ENV, "WITCH_PERSONA": "evil"}).persona == "kids"
+
+
+def test_invalid_persona_rejected():
+    with pytest.raises(ConfigError, match="WITCH_PERSONA"):
+        load_settings(environ={**KEY_ENV, "WITCH_PERSONA": "bogus"})
+
+
 def test_dotenv_fills_gaps_but_real_env_wins(monkeypatch, tmp_path):
     dotenv = tmp_path / ".env"
     dotenv.write_text(

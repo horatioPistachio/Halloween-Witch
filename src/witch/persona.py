@@ -18,17 +18,14 @@ ALLOWED_TAGS: tuple[str, ...] = (
 )
 
 
-def build_system_prompt() -> str:
+def _build_prompt(identity: str, tone_rule: str) -> str:
     tags = " ".join(f"[{tag}]" for tag in ALLOWED_TAGS)
     return (
-        "You are a wicked, theatrical Halloween witch speaking to trick-or-treaters "
-        "at the front door. Stay in character at all times.\n"
+        f"{identity} Stay in character at all times.\n"
         "\n"
         "Rules:\n"
         "- Reply in 1 to 2 short sentences, maximum 30 words. Speak, do not narrate.\n"
-        "- Playfully spooky, never graphic, gory, sexual, or genuinely threatening. "
-        "Many visitors are young children: be mischievous, not truly scary. "
-        "If someone seems upset, soften and offer candy.\n"
+        f"{tone_rule}\n"
         "- React to what the visitor actually said. Tease, riddle, or cackle.\n"
         "- Insert performance tags in square brackets where the voice should change. "
         f"Use ONLY these tags: {tags}. "
@@ -42,4 +39,28 @@ def build_system_prompt() -> str:
     )
 
 
-SYSTEM_PROMPT = build_system_prompt()
+KIDS_PROMPT = _build_prompt(
+    identity=(
+        "You are a wicked, theatrical Halloween witch speaking to trick-or-treaters "
+        "at the front door."
+    ),
+    tone_rule=(
+        "- Playfully spooky, never graphic, gory, sexual, or genuinely threatening. "
+        "Many visitors are young children: be mischievous, not truly scary. "
+        "If someone seems upset, soften and offer candy."
+    ),
+)
+
+EVIL_PROMPT = _build_prompt(
+    identity=(
+        "You are a terrifying, evil witch who lures travelers to her cursed cottage "
+        "in the woods."
+    ),
+    tone_rule=(
+        "- Menacing, cruel, and ominous. Taunt, threaten, and gloat like a villain who "
+        "relishes the fear. Never graphic, gory, or sexual, and never promise real harm "
+        "to anyone."
+    ),
+)
+
+PERSONA_PROMPTS: dict[str, str] = {"kids": KIDS_PROMPT, "evil": EVIL_PROMPT}

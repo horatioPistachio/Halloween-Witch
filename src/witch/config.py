@@ -10,8 +10,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from witch.persona import PERSONA_PROMPTS
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL = "gpt-realtime-2.1-mini"
+DEFAULT_PERSONA = "kids"
 DEFAULT_USAGE_LOG = "usage.jsonl"
 DEFAULT_MAX_OUTPUT_TOKENS = 600
 VAD_TYPES = ("semantic_vad", "server_vad")
@@ -30,6 +33,7 @@ class ConfigError(RuntimeError):
 class Settings:
     api_key: str = field(default="", repr=False)
     model: str = DEFAULT_MODEL
+    persona: str = DEFAULT_PERSONA
     device: int | str | None = None
     vad: str = "semantic_vad"
     reasoning_effort: str = "low"
@@ -60,6 +64,7 @@ def tts_supports_tags(model_id: str) -> bool:
 def load_settings(
     *,
     model: str | None = None,
+    persona: str | None = None,
     device: str | None = None,
     log_level: str | None = None,
     output_device: str | None = None,
@@ -76,6 +81,10 @@ def load_settings(
     api_key = _get(environ, "OPENAI_API_KEY", "")
     if require_openai and not api_key:
         raise ConfigError("OPENAI_API_KEY not set. Add it to .env")
+
+    persona_name = persona or _get(environ, "WITCH_PERSONA", DEFAULT_PERSONA)
+    if persona_name not in PERSONA_PROMPTS:
+        raise ConfigError(f"WITCH_PERSONA must be one of: {', '.join(PERSONA_PROMPTS)}")
 
     vad = _get(environ, "WITCH_VAD", "semantic_vad")
     if vad not in VAD_TYPES:
@@ -105,6 +114,7 @@ def load_settings(
     return Settings(
         api_key=api_key,
         model=model or _get(environ, "WITCH_MODEL", DEFAULT_MODEL),
+        persona=persona_name,
         device=_parse_device(device_raw),
         vad=vad,
         reasoning_effort=effort,

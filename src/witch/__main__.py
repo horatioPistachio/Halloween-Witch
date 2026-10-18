@@ -20,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", help="input device index or name substring")
     parser.add_argument("--output-device", help="output device index or name substring")
     parser.add_argument("--model", help="Realtime model (default: WITCH_MODEL or gpt-realtime-2.1-mini)")
+    parser.add_argument("--persona", choices=("kids", "evil"), help="kids (default) or evil system prompt")
     parser.add_argument("--no-tts", action="store_true", help="print replies only; do not call ElevenLabs")
     parser.add_argument("--say", metavar="TEXT", help="speak TEXT with ElevenLabs and exit")
     parser.add_argument("--log-level", help="DEBUG, INFO, WARNING or ERROR")
@@ -44,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = load_settings(
             model=args.model,
+            persona=args.persona,
             device=args.device,
             output_device=args.output_device,
             log_level=args.log_level,

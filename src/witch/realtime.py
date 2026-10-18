@@ -13,7 +13,7 @@ from openai import AsyncOpenAI
 from witch.audio.base import SAMPLE_RATE
 from witch.config import Settings
 from witch.cost import TokenUsage, tokens_from_usage
-from witch.persona import SYSTEM_PROMPT
+from witch.persona import PERSONA_PROMPTS
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ def session_config(settings: Settings) -> dict[str, Any]:
         "type": "realtime",
         "model": settings.model,
         "output_modalities": ["text"],
-        "instructions": SYSTEM_PROMPT,
+        "instructions": PERSONA_PROMPTS[settings.persona],
         "reasoning": {"effort": settings.reasoning_effort},
         "max_output_tokens": settings.max_output_tokens,
         "audio": {
