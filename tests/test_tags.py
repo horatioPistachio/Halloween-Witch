@@ -1,6 +1,6 @@
 """Tag parser tests."""
 
-from witch.tags import parse
+from witch.tags import MAX_TTS_CHARS, parse, speech_text
 
 
 def test_leading_tag_is_recorded_and_removed():
@@ -70,3 +70,30 @@ def test_malformed_brackets_do_not_raise():
     r = parse("[cackle hi")
     assert r.tags == ()
     assert r.clean_text == "[cackle hi"
+
+
+def test_speech_text_keeps_tags_in_place():
+    r = parse("Ooh, hello. [whispers] Come closer. [evil laugh]")
+    assert speech_text(r, keep_tags=True) == "Ooh, hello. [whispers] Come closer. [evil laugh]"
+
+
+def test_speech_text_without_tags_matches_clean_text():
+    r = parse("[cackle] Hi [pause] there")
+    assert speech_text(r, keep_tags=False) == r.clean_text
+
+
+def test_speech_text_never_contains_unknown_tags():
+    r = parse("Hi [wizard] there [whispers] ok")
+    for keep in (True, False):
+        assert "wizard" not in speech_text(r, keep_tags=keep)
+
+
+def test_speech_text_empty_input():
+    assert speech_text(parse("  "), keep_tags=True) == ""
+    assert speech_text(parse("  "), keep_tags=False) == ""
+
+
+def test_speech_text_truncates_at_sentence_end():
+    text = speech_text(parse("Hello there. " * 100), keep_tags=False)
+    assert len(text) <= MAX_TTS_CHARS
+    assert text.endswith(".")

@@ -7,10 +7,10 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-import numpy as np
 import sounddevice as sd
 
 from witch.audio.base import CHUNK_MS, CHUNK_SAMPLES, SAMPLE_RATE
+from witch.audio.resample import resample
 from witch.config import ConfigError, Settings
 
 log = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ class MicSource:
         # Runs on the PortAudio thread: copy the buffer and hand off to the event loop.
         data = bytes(indata)
         if self._resample_from is not None:
-            data = _resample(data, self._resample_from)
+            data = resample(data, self._resample_from, SAMPLE_RATE)
         if status and self._loop is not None:
             self._loop.call_soon_threadsafe(log.debug, "audio callback status: %s", status)
         if self._loop is not None:
@@ -105,13 +105,3 @@ class MicSource:
                 log.warning("Audio queue full; dropping oldest chunk")
                 self._last_overflow_log = now
         self._queue.put_nowait(data)
-
-
-def _resample(pcm: bytes, src_rate: int) -> bytes:
-    samples = np.frombuffer(pcm, dtype="<i2")
-    if samples.size == 0:
-        return b""
-    n_out = round(samples.size * SAMPLE_RATE / src_rate)
-    x_old = np.arange(samples.size)
-    x_new = np.linspace(0, samples.size - 1, n_out)
-    return np.interp(x_new, x_old, samples).astype("<i2").tobytes()

@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from witch.config import ConfigError, load_settings
+from witch.config import ConfigError, load_settings, tts_supports_tags
 
-KEY_ENV = {"OPENAI_API_KEY": "sk-test-123"}
+KEY_ENV = {"OPENAI_API_KEY": "sk-test-123", "ELEVEN_LABS_API_KEY": "el-test-456"}
 
 
 def test_missing_key_raises_clear_error():
@@ -54,7 +54,10 @@ def test_invalid_vad_rejected():
 
 def test_dotenv_fills_gaps_but_real_env_wins(monkeypatch, tmp_path):
     dotenv = tmp_path / ".env"
-    dotenv.write_text("OPENAI_API_KEY=from-file\nWITCH_MODEL=file-model\n", encoding="utf-8")
+    dotenv.write_text(
+        "OPENAI_API_KEY=from-file\nELEVEN_LABS_API_KEY=el-file\nWITCH_MODEL=file-model\n",
+        encoding="utf-8",
+    )
     fake_environ = {"OPENAI_API_KEY": "from-env"}
     monkeypatch.setattr(os, "environ", fake_environ)
 
@@ -62,3 +65,69 @@ def test_dotenv_fills_gaps_but_real_env_wins(monkeypatch, tmp_path):
 
     assert settings.api_key == "from-env"
     assert settings.model == "file-model"
+
+
+def test_tts_defaults():
+    settings = load_settings(environ=KEY_ENV)
+    assert settings.tts_enabled
+    assert settings.voice_id == "xBIfEFAROTtux2FvqTLj"
+    assert settings.tts_model == "eleven_v4_turbo"
+    assert settings.tts_stability is None
+    assert settings.gate_tail_s == pytest.approx(0.4)
+
+
+def test_eleven_key_hidden_in_repr():
+    assert "el-test-456" not in repr(load_settings(environ=KEY_ENV))
+
+
+def test_missing_eleven_key_fails_when_tts_on():
+    with pytest.raises(ConfigError, match="ELEVEN_LABS_API_KEY not set"):
+        load_settings(environ={"OPENAI_API_KEY": "sk-test-123"})
+
+
+def test_missing_eleven_key_allowed_when_tts_off():
+    settings = load_settings(environ={"OPENAI_API_KEY": "sk-test-123", "WITCH_TTS": "off"})
+    assert not settings.tts_enabled
+
+
+def test_cli_no_tts_overrides_env():
+    settings = load_settings(tts=False, environ={"OPENAI_API_KEY": "sk-test-123"})
+    assert not settings.tts_enabled
+
+
+def test_say_mode_needs_no_openai_key():
+    settings = load_settings(
+        tts=True,
+        require_openai=False,
+        environ={"ELEVEN_LABS_API_KEY": "el-test-456"},
+    )
+    assert settings.api_key == ""
+
+
+def test_output_device_from_cli_or_env():
+    assert load_settings(output_device="Speakers", environ=KEY_ENV).output_device == "Speakers"
+    assert load_settings(environ={**KEY_ENV, "WITCH_OUTPUT_DEVICE": "3"}).output_device == 3
+
+
+@pytest.mark.parametrize(
+    ("env", "name"),
+    [
+        ({"WITCH_TTS": "maybe"}, "WITCH_TTS"),
+        ({"WITCH_TTS_STABILITY": "1.5"}, "WITCH_TTS_STABILITY"),
+        ({"WITCH_TTS_STABILITY": "abc"}, "WITCH_TTS_STABILITY"),
+        ({"WITCH_GATE_TAIL_MS": "-1"}, "WITCH_GATE_TAIL_MS"),
+        ({"WITCH_VOICE_ID": "abc/def"}, "WITCH_VOICE_ID"),
+        ({"WITCH_VOICE_ID": "abc def"}, "WITCH_VOICE_ID"),
+    ],
+)
+def test_invalid_tts_settings_rejected(env, name):
+    with pytest.raises(ConfigError, match=name):
+        load_settings(environ={**KEY_ENV, **env})
+
+
+def test_tts_supports_tags_by_model_family():
+    assert tts_supports_tags("eleven_v4_turbo")
+    assert tts_supports_tags("eleven_v4")
+    assert tts_supports_tags("eleven_v3")
+    assert not tts_supports_tags("eleven_flash_v2_5")
+    assert not tts_supports_tags("eleven_multilingual_v2")

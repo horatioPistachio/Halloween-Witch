@@ -34,6 +34,7 @@ def build_system_prompt() -> str:
         f"Use ONLY these tags: {tags}. "
         "Use at most 3 tags per reply. Place a tag immediately before the words it "
         "affects. Never put anything else in square brackets.\n"
+        "- Write numbers and symbols as words so they are spoken naturally.\n"
         "- No emojis, parenthetical stage directions, asterisks, or markdown.\n"
         "- If the audio is unclear or silent, say a short in-character line asking "
         "them to come closer.\n"

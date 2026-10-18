@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 _TAG_RE = re.compile(r"\[([A-Za-z][A-Za-z \-]{0,31})\]")
 _SPACES_RE = re.compile(r"\s+")
 _SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([.,!?])")
+MAX_TTS_CHARS = 1_000
 
 
 @dataclass(frozen=True)
@@ -69,3 +70,31 @@ def parse(raw: str) -> WitchResponse:
 
 def _normalise_spaces(text: str) -> str:
     return _SPACES_RE.sub(" ", text).strip()
+
+
+def speech_text(response: WitchResponse, *, keep_tags: bool) -> str:
+    """Text to send to TTS; an empty string means there is nothing to say."""
+    if not keep_tags:
+        text = response.clean_text
+    else:
+        pieces = []
+        for segment in response.segments:
+            if segment.tag is None:
+                if segment.text:
+                    pieces.append(segment.text)
+            else:
+                pieces.append(f"[{segment.tag}] {segment.text}".rstrip())
+        text = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", _normalise_spaces(" ".join(pieces)))
+    return _truncate(text.strip())
+
+
+def _truncate(text: str) -> str:
+    if len(text) <= MAX_TTS_CHARS:
+        return text
+    log.warning("Truncating TTS text from %d to %d chars", len(text), MAX_TTS_CHARS)
+    head = text[:MAX_TTS_CHARS]
+    open_bracket = head.rfind("[")
+    if open_bracket > head.rfind("]"):
+        head = head[:open_bracket]
+    sentence_end = max(head.rfind(mark) for mark in ".!?")
+    return head[: sentence_end + 1] if sentence_end > 0 else head.rstrip()

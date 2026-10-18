@@ -65,6 +65,7 @@ class InteractionCost:
     tokens: TokenUsage
     usd: float | None
     total_usd: float | None
+    tts_chars: int = 0
 
 
 def tokens_from_usage(usage: Any) -> TokenUsage:
@@ -128,7 +129,9 @@ class CostTracker:
     def total_usd(self) -> float | None:
         return self._total_usd if self._prices is not None else None
 
-    def record(self, response_id: str, status: str, tokens: TokenUsage) -> InteractionCost:
+    def record(
+        self, response_id: str, status: str, tokens: TokenUsage, tts_chars: int = 0
+    ) -> InteractionCost:
         self._interactions += 1
         usd = cost_usd(tokens, self._prices) if self._prices is not None else None
         if usd is not None:
@@ -140,6 +143,7 @@ class CostTracker:
             tokens=tokens,
             usd=usd,
             total_usd=self.total_usd,
+            tts_chars=tts_chars,
         )
         self._append(entry)
         return entry
@@ -156,6 +160,7 @@ class CostTracker:
             "tokens": asdict(entry.tokens),
             "usd": entry.usd,
             "total_usd": entry.total_usd,
+            "tts_chars": entry.tts_chars,
         }
         try:
             with self._log_path.open("a", encoding="utf-8") as fh:
@@ -171,11 +176,14 @@ def format_interaction(entry: InteractionCost) -> str:
     cached = t.text_in_cached + t.audio_in_cached + t.image_in_cached
     usd = "n/a" if entry.usd is None else f"${entry.usd:.5f}"
     total = "n/a" if entry.total_usd is None else f"${entry.total_usd:.4f}"
-    return (
+    line = (
         f"cost {usd} | in: audio {t.audio_in}, text {t.text_in}, image {t.image_in}, "
         f"cached {cached} | out: text {t.text_out}, audio {t.audio_out} | "
         f"run total {total} after {entry.number} interactions"
     )
+    if entry.tts_chars:
+        line += f" | tts chars {entry.tts_chars}"
+    return line
 
 
 def _count(obj: Any, name: str) -> int:
