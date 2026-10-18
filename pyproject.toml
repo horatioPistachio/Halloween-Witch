@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "witch"
+version = "0.1.0"
+description = "Realtime voice chat for an animatronic Halloween witch (MVP)."
+requires-python = ">=3.11"
+dependencies = [
+    "openai[realtime]>=3.35.1,<4",
+    "sounddevice>=0.5",
+    "numpy>=1.26",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
