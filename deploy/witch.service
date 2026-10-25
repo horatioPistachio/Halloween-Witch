@@ -1,0 +1,22 @@
+[Unit]
+Description=Halloween Witch
+After=network-online.target sound.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Example user and paths: adjust to your install. The user needs the gpio and audio groups.
+User=pi
+Group=gpio
+WorkingDirectory=/home/pi/Halloween-Witch
+EnvironmentFile=/home/pi/Halloween-Witch/.env
+Environment=WITCH_TRIGGER=pir
+ExecStart=/home/pi/Halloween-Witch/.venv/bin/python -m witch
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

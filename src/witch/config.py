@@ -23,6 +23,17 @@ DEFAULT_VOICE_ID = "xBIfEFAROTtux2FvqTLj"
 DEFAULT_TTS_MODEL = "eleven_v4_turbo"
 DEFAULT_GATE_TAIL_MS = 400
 TAG_CAPABLE_TTS_PREFIXES = ("eleven_v3", "eleven_v4")
+TRIGGERS = ("none", "pir", "keyboard")
+MAX_BCM_PIN = 27
+DEFAULT_PIR_PIN = 27
+DEFAULT_PIR_POWER_PIN = 17
+DEFAULT_ACTIVATE_PIN = 22
+DEFAULT_PIR_WARMUP_S = 60.0
+DEFAULT_ACTIVATE_MS = 1000
+DEFAULT_IDLE_TIMEOUT_S = 30.0
+DEFAULT_MAX_CONVERSATION_S = 120.0
+DEFAULT_COOLDOWN_S = 30.0
+DEFAULT_SETUP_TIMEOUT_S = 20.0
 
 
 class ConfigError(RuntimeError):
@@ -47,6 +58,16 @@ class Settings:
     tts_stability: float | None = None
     output_device: int | str | None = None
     gate_tail_ms: int = DEFAULT_GATE_TAIL_MS
+    trigger: str = "none"
+    pir_pin: int = DEFAULT_PIR_PIN
+    pir_power_pin: int | None = DEFAULT_PIR_POWER_PIN
+    activate_pin: int = DEFAULT_ACTIVATE_PIN
+    pir_warmup_s: float = DEFAULT_PIR_WARMUP_S
+    activate_ms: int = DEFAULT_ACTIVATE_MS
+    idle_timeout_s: float = DEFAULT_IDLE_TIMEOUT_S
+    max_conversation_s: float = DEFAULT_MAX_CONVERSATION_S
+    cooldown_s: float = DEFAULT_COOLDOWN_S
+    setup_timeout_s: float = DEFAULT_SETUP_TIMEOUT_S
 
     @property
     def tts_keep_tags(self) -> bool:
@@ -69,6 +90,7 @@ def load_settings(
     log_level: str | None = None,
     output_device: str | None = None,
     tts: bool | None = None,
+    trigger: str | None = None,
     require_openai: bool = True,
     environ: Mapping[str, str] | None = None,
     dotenv_path: Path | None = None,
@@ -111,7 +133,15 @@ def load_settings(
     output_raw = output_device if output_device is not None else _get(environ, "WITCH_OUTPUT_DEVICE", "")
     usage_raw = environ.get("WITCH_USAGE_LOG", DEFAULT_USAGE_LOG).strip()
 
+    trigger_name = (trigger or _get(environ, "WITCH_TRIGGER", "none")).lower()
+    if trigger_name not in TRIGGERS:
+        raise ConfigError(f"WITCH_TRIGGER must be one of: {', '.join(TRIGGERS)}")
+    # Run-control values are only read when a trigger is in use, so a laptop .env needs none of them.
+    run_control = _parse_run_control(environ, trigger_name) if trigger_name != "none" else {}
+
     return Settings(
+        trigger=trigger_name,
+        **run_control,
         api_key=api_key,
         model=model or _get(environ, "WITCH_MODEL", DEFAULT_MODEL),
         persona=persona_name,
@@ -129,6 +159,67 @@ def load_settings(
         output_device=_parse_device(output_raw),
         gate_tail_ms=_parse_int(environ, "WITCH_GATE_TAIL_MS", DEFAULT_GATE_TAIL_MS, minimum=0),
     )
+
+
+def _parse_run_control(environ: Mapping[str, str], trigger: str) -> dict[str, object]:
+    values: dict[str, object] = {
+        "pir_pin": _parse_pin(environ, "WITCH_PIR_PIN", DEFAULT_PIR_PIN),
+        "pir_power_pin": _parse_optional_pin(environ, "WITCH_PIR_POWER_PIN", DEFAULT_PIR_POWER_PIN),
+        "activate_pin": _parse_pin(environ, "WITCH_ACTIVATE_PIN", DEFAULT_ACTIVATE_PIN),
+        "pir_warmup_s": _parse_float(environ, "WITCH_PIR_WARMUP_S", DEFAULT_PIR_WARMUP_S, minimum=0.0),
+        "activate_ms": _parse_int(environ, "WITCH_ACTIVATE_MS", DEFAULT_ACTIVATE_MS),
+        "idle_timeout_s": _parse_float(
+            environ, "WITCH_IDLE_TIMEOUT_S", DEFAULT_IDLE_TIMEOUT_S, minimum=0.0, strict=True
+        ),
+        "max_conversation_s": _parse_float(
+            environ, "WITCH_MAX_CONVERSATION_S", DEFAULT_MAX_CONVERSATION_S, minimum=0.0, strict=True
+        ),
+        "cooldown_s": _parse_float(environ, "WITCH_COOLDOWN_S", DEFAULT_COOLDOWN_S, minimum=0.0),
+        "setup_timeout_s": _parse_float(
+            environ, "WITCH_SETUP_TIMEOUT_S", DEFAULT_SETUP_TIMEOUT_S, minimum=0.0, strict=True
+        ),
+    }
+    if values["max_conversation_s"] < values["idle_timeout_s"]:  # type: ignore[operator]
+        raise ConfigError("WITCH_MAX_CONVERSATION_S must be at least WITCH_IDLE_TIMEOUT_S")
+    if trigger == "pir":
+        # Only the PIR path drives real pins; the keyboard trigger uses a logging output.
+        pins = [values["pir_pin"], values["pir_power_pin"], values["activate_pin"]]
+        used = [pin for pin in pins if pin is not None]
+        if len(set(used)) != len(used):
+            raise ConfigError("WITCH_PIR_PIN, WITCH_PIR_POWER_PIN and WITCH_ACTIVATE_PIN must be different")
+    return values
+
+
+def _parse_pin(environ: Mapping[str, str], name: str, default: int) -> int:
+    value = _parse_int(environ, name, default, minimum=0)
+    if value > MAX_BCM_PIN:
+        raise ConfigError(f"{name} must be between 0 and {MAX_BCM_PIN}")
+    return value
+
+
+def _parse_optional_pin(environ: Mapping[str, str], name: str, default: int) -> int | None:
+    if environ.get(name, str(default)).strip() == "":
+        return None
+    return _parse_pin(environ, name, default)
+
+
+def _parse_float(
+    environ: Mapping[str, str],
+    name: str,
+    default: float,
+    *,
+    minimum: float,
+    strict: bool = False,
+) -> float:
+    raw = _get(environ, name, str(default))
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number") from exc
+    if value < minimum or (strict and value == minimum):
+        bound = "greater than" if strict else "at least"
+        raise ConfigError(f"{name} must be {bound} {minimum:g}")
+    return value
 
 
 def _get(environ: Mapping[str, str], name: str, default: str) -> str:
