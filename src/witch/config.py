@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from witch.persona import PERSONA_PROMPTS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MODEL = "gpt-realtime-2.1-mini"
+DEFAULT_MODEL = "gpt-realtime-2.1-mini" # or "gpt-realtime-2.1-mini"
 DEFAULT_PERSONA = "kids"
 DEFAULT_USAGE_LOG = "usage.jsonl"
 DEFAULT_MAX_OUTPUT_TOKENS = 600
