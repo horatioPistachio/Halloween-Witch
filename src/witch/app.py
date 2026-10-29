@@ -55,6 +55,9 @@ MAX_BACKOFF_S = 15.0
 class SpeechJob:
     text: str
     speech_ended_at: float | None
+    gpt_first_token_ms: int | None = None
+    gpt_done_ms: int | None = None
+    queued_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,7 @@ class _Spoken:
     started_at: float
     first_audio_at: float | None
     finished_at: float
+    tts_requested_at: float | None = None
 
     @property
     def played_s(self) -> float:
@@ -233,13 +237,28 @@ class Conversation:
                         done.response_id, done.status, done.tokens, tts_chars=len(speech)
                     )
                     _report(done, entry, latency_ms, parsed)
+                    now = loop.time()
+                    done_ms = _ms_between(speech_ended_at, now)
+                    log.info(
+                        "timing> gpt: first text %s, response complete %s (after end of speech)",
+                        _fmt_ms(latency_ms),
+                        _fmt_ms(done_ms),
+                    )
                     if speech:
                         # A cue's close is released by this job's playback, so it must not close again.
                         if not self._opening_gate:
                             self._gate.close()
                         if self._timer is not None:
                             self._timer.hold()
-                        self._queue.put_nowait(SpeechJob(text=speech, speech_ended_at=speech_ended_at))
+                        self._queue.put_nowait(
+                            SpeechJob(
+                                text=speech,
+                                speech_ended_at=speech_ended_at,
+                                gpt_first_token_ms=latency_ms,
+                                gpt_done_ms=done_ms,
+                                queued_at=now,
+                            )
+                        )
                     elif self._opening_gate:
                         # No speech will release the cue's close, so reopen the mic now.
                         self._gate.release(self._settings.gate_tail_s)
@@ -343,27 +362,51 @@ async def _speak(tts: TextToSpeech, sink: AudioSink, text: str) -> _Spoken:
     loop = asyncio.get_running_loop()
     started_at = loop.time()
     first_audio_at: float | None = None
+    tts_requested_at: float | None = None
 
     async def audio() -> AsyncIterator[bytes]:
-        nonlocal first_audio_at
+        nonlocal first_audio_at, tts_requested_at
+        tts_requested_at = loop.time()
         async for chunk in tts.synthesize(text):
             if first_audio_at is None:
                 first_audio_at = loop.time()
             yield chunk
 
     await sink.play(audio())
-    return _Spoken(started_at=started_at, first_audio_at=first_audio_at, finished_at=loop.time())
+    return _Spoken(
+        started_at=started_at,
+        first_audio_at=first_audio_at,
+        finished_at=loop.time(),
+        tts_requested_at=tts_requested_at,
+    )
+
+
+def _ms_between(start: float | None, end: float | None) -> int | None:
+    if start is None or end is None:
+        return None
+    return round((end - start) * 1000)
+
+
+def _fmt_ms(ms: int | None) -> str:
+    return "n/a" if ms is None else f"{ms} ms"
 
 
 def _print_speech(job: SpeechJob, spoken: _Spoken) -> None:
-    if job.speech_ended_at is None or spoken.first_audio_at is None:
-        first = "n/a"
-    else:
-        first = f"{round((spoken.first_audio_at - job.speech_ended_at) * 1000)} ms"
+    first = _fmt_ms(_ms_between(job.speech_ended_at, spoken.first_audio_at))
     print(
         f"speech> {len(job.text)} chars, first audio {first} after end of speech, "
         f"played {spoken.played_s:.1f} s",
         flush=True,
+    )
+    log.info(
+        "timing> gpt first text %s, gpt complete %s | queue wait %s, "
+        "elevenlabs first audio %s | end of speech to first audio %s, playback %.1f s",
+        _fmt_ms(job.gpt_first_token_ms),
+        _fmt_ms(job.gpt_done_ms),
+        _fmt_ms(_ms_between(job.queued_at, spoken.tts_requested_at)),
+        _fmt_ms(_ms_between(spoken.tts_requested_at, spoken.first_audio_at)),
+        first,
+        spoken.played_s,
     )
 
 
@@ -379,10 +422,7 @@ async def say(settings: Settings, text: str) -> int:
     except (TTSError, PlaybackError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    if spoken.first_audio_at is None:
-        first = "n/a"
-    else:
-        first = f"{round((spoken.first_audio_at - spoken.started_at) * 1000)} ms"
+    first = _fmt_ms(_ms_between(spoken.tts_requested_at, spoken.first_audio_at))
     print(f"first audio {first}, played {spoken.played_s:.1f} s")
     return 0
 

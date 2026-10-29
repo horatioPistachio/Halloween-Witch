@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator
 
 import httpx
@@ -44,6 +45,8 @@ class ElevenLabsTTS:
         if self._client is None:
             raise RuntimeError("ElevenLabsTTS used outside its context manager")
         log.debug("TTS request: %d chars, model %s", len(text), self._settings.tts_model)
+        requested_at = time.perf_counter()
+        first_chunk_logged = False
         extra: dict[str, VoiceSettings] = {}
         if self._settings.tts_stability is not None:
             extra["voice_settings"] = VoiceSettings(stability=self._settings.tts_stability)
@@ -58,6 +61,14 @@ class ElevenLabsTTS:
                 request_options={"max_retries": 0},
                 **extra,
             ):
+                if not first_chunk_logged:
+                    first_chunk_logged = True
+                    log.info(
+                        "timing> elevenlabs: first byte %.0f ms (%d chars, %s)",
+                        (time.perf_counter() - requested_at) * 1000,
+                        len(text),
+                        self._settings.tts_model,
+                    )
                 data = carry + chunk
                 usable = len(data) - len(data) % 2
                 carry = data[usable:]

@@ -16,6 +16,12 @@ def test_cost_matches_published_prices():
     assert cost_usd(tokens, PRICES[MODEL]) == pytest.approx(expected)
 
 
+def test_full_model_prices():
+    tokens = TokenUsage(text_in=1000, text_in_cached=400, audio_in=2000, audio_in_cached=1000, text_out=500)
+    expected = (600 * 4.00 + 400 * 0.40 + 1000 * 32.00 + 1000 * 0.40 + 500 * 24.00) / 1_000_000
+    assert cost_usd(tokens, PRICES["gpt-realtime-2.1"]) == pytest.approx(expected)
+
+
 def test_tokens_from_sdk_shaped_usage():
     usage = NS(
         input_tokens=400,

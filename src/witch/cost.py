@@ -30,6 +30,16 @@ class ModelPrices:
 
 # Source: developers.openai.com/api/docs/pricing (checked 2026-10-18).
 PRICES: dict[str, ModelPrices] = {
+    "gpt-realtime-2.1": ModelPrices(
+        text_in=4.00,
+        text_in_cached=0.40,
+        audio_in=32.00,
+        audio_in_cached=0.40,
+        image_in=5.00,
+        image_in_cached=0.50,
+        text_out=24.00,
+        audio_out=64.00,
+    ),
     "gpt-realtime-2.1-mini": ModelPrices(
         text_in=0.60,
         text_in_cached=0.06,
