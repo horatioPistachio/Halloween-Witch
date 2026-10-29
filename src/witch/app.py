@@ -21,6 +21,7 @@ from witch.control import EndReason, IdleTimer, RunController
 from witch.cost import CostTracker, InteractionCost, format_interaction
 from witch.gate import MicGate
 from witch.hardware import build_hardware
+from witch.opening import OpeningPicker
 from witch.realtime import (
     RealtimeClient,
     ResponseDone,
@@ -74,10 +75,16 @@ class Conversation:
     mode creates one per activation and calls run(timer) once.
     """
 
-    def __init__(self, settings: Settings, tracker: CostTracker) -> None:
+    def __init__(
+        self, settings: Settings, tracker: CostTracker, openings: OpeningPicker | None = None
+    ) -> None:
         self._settings = settings
         self._tracker = tracker
+        self._openings = openings
         self._gate = MicGate()
+        # True while the gate is closed for the opening cue rather than for a reply.
+        self._opening_gate = False
+        self._opening_sent_at: float | None = None
         self._queue: asyncio.Queue[SpeechJob] = asyncio.Queue()
         self._stack = AsyncExitStack()
         self._mic: AudioSource | None = None
@@ -120,12 +127,16 @@ class Conversation:
         """One Realtime session that ends on silence, the time cap, or a stream failure."""
         async with RealtimeClient(self._settings) as rt:
             log.info("Connected to %s.", self._settings.model)
-            return await self._session(rt, timer)
+            return await self._session(rt, timer, self._openings)
 
-    async def _session(self, rt: RealtimeClient, timer: IdleTimer | None) -> EndReason:
+    async def _session(
+        self, rt: RealtimeClient, timer: IdleTimer | None, openings: OpeningPicker | None = None
+    ) -> EndReason:
         assert self._mic is not None, "Conversation used before __aenter__"
         self._timer = timer
         started = asyncio.get_running_loop().time()
+        if openings is not None:
+            await self._send_opening(rt, openings)
         pump = asyncio.create_task(_pump_audio(self._mic, rt, self._gate), name="pump-audio")
         events = asyncio.create_task(self._handle_events(rt), name="handle-events")
         watchdog: asyncio.Task[EndReason] | None = None
@@ -146,6 +157,23 @@ class Conversation:
             for task in running:
                 task.cancel()
             await asyncio.gather(*running, return_exceptions=True)
+
+    async def _send_opening(self, rt: RealtimeClient, openings: OpeningPicker) -> None:
+        # Closed before the audio pump starts, so nothing said during the jump is sent.
+        self._gate.close()
+        self._opening_gate = True
+        if self._settings.opening_delay_ms:
+            await asyncio.sleep(self._settings.opening_delay_s)
+        cue = openings.next()
+        log.info(
+            "opening> cue %d/%d %s (delay %d ms)",
+            openings.position,
+            openings.size,
+            cue.id,
+            self._settings.opening_delay_ms,
+        )
+        self._opening_sent_at = asyncio.get_running_loop().time()
+        await rt.prompt(cue.text)
 
     async def _watch(self, timer: IdleTimer, started: float) -> EndReason:
         loop = asyncio.get_running_loop()
@@ -174,7 +202,9 @@ class Conversation:
 
     async def _handle_events(self, rt: RealtimeClient) -> None:
         loop = asyncio.get_running_loop()
-        speech_ended_at: float | None = None
+        # The opening's latency is measured from the moment its cue was sent.
+        speech_ended_at: float | None = self._opening_sent_at
+        self._opening_sent_at = None
         streaming = False
         latency_ms: int | None = None
 
@@ -204,10 +234,16 @@ class Conversation:
                     )
                     _report(done, entry, latency_ms, parsed)
                     if speech:
-                        self._gate.close()
+                        # A cue's close is released by this job's playback, so it must not close again.
+                        if not self._opening_gate:
+                            self._gate.close()
                         if self._timer is not None:
                             self._timer.hold()
                         self._queue.put_nowait(SpeechJob(text=speech, speech_ended_at=speech_ended_at))
+                    elif self._opening_gate:
+                        # No speech will release the cue's close, so reopen the mic now.
+                        self._gate.release(self._settings.gate_tail_s)
+                    self._opening_gate = False
                     streaming = False
                     latency_ms = None
                     speech_ended_at = None
@@ -252,8 +288,9 @@ async def run_controlled(settings: Settings) -> int:
     """PIR/keyboard mode: one conversation per activation, governed by RunController."""
     tracker = CostTracker(settings.model, settings.usage_log)
     sensor, output = build_hardware(settings)
+    openings = OpeningPicker() if settings.opening else None
     controller = RunController(
-        settings, sensor, output, lambda: Conversation(settings, tracker), FATAL_ERRORS
+        settings, sensor, output, lambda: Conversation(settings, tracker, openings), FATAL_ERRORS
     )
     try:
         await controller.run()

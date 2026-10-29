@@ -1,12 +1,14 @@
-"""ElevenLabs text-to-speech over the streaming HTTP endpoint."""
+"""ElevenLabs text-to-speech using the official `elevenlabs` SDK (streaming)."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
 
 import httpx
+from elevenlabs import VoiceSettings
+from elevenlabs.client import AsyncElevenLabs
+from elevenlabs.core.api_error import ApiError
 
 from witch.audio.base import SAMPLE_RATE
 from witch.config import ConfigError, Settings
@@ -14,7 +16,7 @@ from witch.tts.base import TTSError
 
 log = logging.getLogger(__name__)
 
-API_BASE_URL = "https://api.elevenlabs.io"
+REQUEST_TIMEOUT_S = 10.0
 MAX_ERROR_CHARS = 200
 
 
@@ -22,63 +24,54 @@ class ElevenLabsTTS:
     def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self._settings = settings
         self._transport = transport
-        self._client: httpx.AsyncClient | None = None
+        self._http: httpx.AsyncClient | None = None
+        self._client: AsyncElevenLabs | None = None
 
     async def __aenter__(self) -> ElevenLabsTTS:
         if not self._settings.eleven_api_key:
             raise ConfigError("ELEVEN_LABS_API_KEY not set. Add it to .env or run with --no-tts")
-        self._client = httpx.AsyncClient(
-            base_url=API_BASE_URL,
-            headers={"xi-api-key": self._settings.eleven_api_key},
-            timeout=httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0),
-            transport=self._transport,
-        )
+        self._http = httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S, transport=self._transport)
+        self._client = AsyncElevenLabs(api_key=self._settings.eleven_api_key, httpx_client=self._http)
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        if self._http is not None:
+            await self._http.aclose()
+        self._http = None
+        self._client = None
 
     async def synthesize(self, text: str) -> AsyncIterator[bytes]:
         if self._client is None:
             raise RuntimeError("ElevenLabsTTS used outside its context manager")
-        path = f"/v1/text-to-speech/{self._settings.voice_id}/stream"
         log.debug("TTS request: %d chars, model %s", len(text), self._settings.tts_model)
+        extra: dict[str, VoiceSettings] = {}
+        if self._settings.tts_stability is not None:
+            extra["voice_settings"] = VoiceSettings(stability=self._settings.tts_stability)
         try:
-            async with self._client.stream(
-                "POST",
-                path,
-                params={"output_format": f"pcm_{SAMPLE_RATE}"},
-                json=self._body(text),
-            ) as response:
-                if not response.is_success:
-                    await response.aread()
-                    raise TTSError(f"ElevenLabs HTTP {response.status_code}: {_error_message(response)}")
-                carry = b""
-                async for chunk in response.aiter_bytes():
-                    data = carry + chunk
-                    usable = len(data) - len(data) % 2
-                    carry = data[usable:]
-                    if usable:
-                        yield data[:usable]
-                if carry:
-                    log.debug("Dropped trailing odd byte from TTS stream")
+            carry = b""
+            # No SDK retries: a retry would add seconds of silence to a live reply.
+            async for chunk in self._client.text_to_speech.stream(
+                voice_id=self._settings.voice_id,
+                text=text,
+                model_id=self._settings.tts_model,
+                output_format=f"pcm_{SAMPLE_RATE}",
+                request_options={"max_retries": 0},
+                **extra,
+            ):
+                data = carry + chunk
+                usable = len(data) - len(data) % 2
+                carry = data[usable:]
+                if usable:
+                    yield data[:usable]
+            if carry:
+                log.debug("Dropped trailing odd byte from TTS stream")
+        except ApiError as exc:
+            raise TTSError(f"ElevenLabs HTTP {exc.status_code}: {_error_message(exc.body)}") from None
         except httpx.HTTPError as exc:
             raise TTSError(f"ElevenLabs request failed: {type(exc).__name__}") from None
 
-    def _body(self, text: str) -> dict[str, Any]:
-        body: dict[str, Any] = {"text": text, "model_id": self._settings.tts_model}
-        if self._settings.tts_stability is not None:
-            body["voice_settings"] = {"stability": self._settings.tts_stability}
-        return body
 
-
-def _error_message(response: httpx.Response) -> str:
-    try:
-        body = response.json()
-    except ValueError:
-        return "no details"
+def _error_message(body: object) -> str:
     detail = body.get("detail") if isinstance(body, dict) else None
     if isinstance(detail, dict):
         message = detail.get("message") or detail.get("status")

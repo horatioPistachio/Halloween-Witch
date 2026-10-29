@@ -41,6 +41,8 @@ DEFAULT_IDLE_TIMEOUT_S = 30.0
 DEFAULT_MAX_CONVERSATION_S = 120.0
 DEFAULT_COOLDOWN_S = 30.0
 DEFAULT_SETUP_TIMEOUT_S = 20.0
+DEFAULT_OPENING_DELAY_MS = 0
+MAX_OPENING_DELAY_MS = 5000
 
 
 class ConfigError(RuntimeError):
@@ -75,6 +77,8 @@ class Settings:
     max_conversation_s: float = DEFAULT_MAX_CONVERSATION_S
     cooldown_s: float = DEFAULT_COOLDOWN_S
     setup_timeout_s: float = DEFAULT_SETUP_TIMEOUT_S
+    opening: bool = True
+    opening_delay_ms: int = DEFAULT_OPENING_DELAY_MS
 
     @property
     def tts_keep_tags(self) -> bool:
@@ -83,6 +87,10 @@ class Settings:
     @property
     def gate_tail_s(self) -> float:
         return self.gate_tail_ms / 1000
+
+    @property
+    def opening_delay_s(self) -> float:
+        return self.opening_delay_ms / 1000
 
 
 def tts_supports_tags(model_id: str) -> bool:
@@ -99,6 +107,7 @@ def load_settings(
     output_device: str | None = None,
     tts: bool | None = None,
     trigger: str | None = None,
+    opening: bool | None = None,
     require_openai: bool = True,
     environ: Mapping[str, str] | None = None,
     dotenv_path: Path | None = None,
@@ -151,6 +160,8 @@ def load_settings(
         raise ConfigError(f"WITCH_TRIGGER must be one of: {', '.join(TRIGGERS)}")
     # Run-control values are only read when a trigger is in use, so a laptop .env needs none of them.
     run_control = _parse_run_control(environ, trigger_name) if trigger_name != "none" else {}
+    if opening is not None:
+        run_control["opening"] = opening
 
     return Settings(
         trigger=trigger_name,
@@ -190,6 +201,14 @@ def _parse_run_control(environ: Mapping[str, str], trigger: str) -> dict[str, ob
         "cooldown_s": _parse_float(environ, "WITCH_COOLDOWN_S", DEFAULT_COOLDOWN_S, minimum=0.0),
         "setup_timeout_s": _parse_float(
             environ, "WITCH_SETUP_TIMEOUT_S", DEFAULT_SETUP_TIMEOUT_S, minimum=0.0, strict=True
+        ),
+        "opening": _parse_switch(environ, "WITCH_OPENING", default=True),
+        "opening_delay_ms": _parse_int(
+            environ,
+            "WITCH_OPENING_DELAY_MS",
+            DEFAULT_OPENING_DELAY_MS,
+            minimum=0,
+            maximum=MAX_OPENING_DELAY_MS,
         ),
     }
     if values["max_conversation_s"] < values["idle_timeout_s"]:  # type: ignore[operator]
@@ -266,7 +285,14 @@ def _parse_stability(environ: Mapping[str, str]) -> float | None:
     return value
 
 
-def _parse_int(environ: Mapping[str, str], name: str, default: int, *, minimum: int = 1) -> int:
+def _parse_int(
+    environ: Mapping[str, str],
+    name: str,
+    default: int,
+    *,
+    minimum: int = 1,
+    maximum: int | None = None,
+) -> int:
     raw = _get(environ, name, str(default))
     try:
         value = int(raw)
@@ -274,4 +300,6 @@ def _parse_int(environ: Mapping[str, str], name: str, default: int, *, minimum: 
         raise ConfigError(f"{name} must be an integer") from exc
     if value < minimum:
         raise ConfigError(f"{name} must be at least {minimum}")
+    if maximum is not None and value > maximum:
+        raise ConfigError(f"{name} must be at most {maximum}")
     return value

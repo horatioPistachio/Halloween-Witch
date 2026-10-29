@@ -158,3 +158,44 @@ def test_tts_supports_tags_by_model_family():
     assert tts_supports_tags("eleven_v3")
     assert not tts_supports_tags("eleven_flash_v2_5")
     assert not tts_supports_tags("eleven_multilingual_v2")
+
+
+KEYBOARD_ENV = {**KEY_ENV, "WITCH_TRIGGER": "keyboard"}
+
+
+def test_opening_defaults_on_with_no_delay():
+    settings = load_settings(environ=KEYBOARD_ENV)
+    assert settings.opening is True
+    assert settings.opening_delay_ms == 0
+    assert settings.opening_delay_s == 0.0
+
+
+def test_opening_can_be_turned_off_and_delay_set():
+    settings = load_settings(environ={**KEYBOARD_ENV, "WITCH_OPENING": "off", "WITCH_OPENING_DELAY_MS": "1500"})
+    assert settings.opening is False
+    assert settings.opening_delay_s == pytest.approx(1.5)
+
+
+def test_cli_no_opening_overrides_env():
+    settings = load_settings(opening=False, environ={**KEYBOARD_ENV, "WITCH_OPENING": "on"})
+    assert settings.opening is False
+
+
+@pytest.mark.parametrize(
+    ("env", "name"),
+    [
+        ({"WITCH_OPENING": "maybe"}, "WITCH_OPENING"),
+        ({"WITCH_OPENING_DELAY_MS": "-1"}, "WITCH_OPENING_DELAY_MS"),
+        ({"WITCH_OPENING_DELAY_MS": "5001"}, "WITCH_OPENING_DELAY_MS"),
+        ({"WITCH_OPENING_DELAY_MS": "soon"}, "WITCH_OPENING_DELAY_MS"),
+    ],
+)
+def test_invalid_opening_settings_rejected(env, name):
+    with pytest.raises(ConfigError, match=name):
+        load_settings(environ={**KEYBOARD_ENV, **env})
+
+
+def test_opening_settings_not_read_when_trigger_is_none():
+    settings = load_settings(environ={**KEY_ENV, "WITCH_OPENING_DELAY_MS": "bogus"})
+    assert settings.opening is True
+    assert settings.opening_delay_ms == 0

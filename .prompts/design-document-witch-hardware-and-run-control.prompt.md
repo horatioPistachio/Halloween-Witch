@@ -220,7 +220,7 @@ Refactor, preserving existing behaviour for `WITCH_TRIGGER=none`:
   - `gate.close()` at `ResponseDone` also calls `timer.hold()`; `_speak_loop`'s `finally` calls `timer.release()` next to `gate.release()`. A reply that produces no speech holds nothing.
   - With `--no-tts` nothing is spoken, so the first `TextDelta` and `ResponseDone` are the witch's only activity.
 - Reconnect-on-error (the existing backoff loop in `run()`) is used only by `WITCH_TRIGGER=none`. In controlled mode a retryable error returns `EndReason.ERROR` and the controller enters the cooldown; the next motion starts a fresh session with no conversation history. `FATAL_ERRORS` propagate and exit with code 1 (R12).
-- A hook point for the future "witch speaks first" feature: `Conversation.run(timer)` calls `await self._opening()` after the pulse is started; it is a no-op now (section 12).
+- A hook point for the "witch speaks first" feature: `Conversation._session` sends the opening cue right after the pulse is started (section 12, and `design-document-witch-first-to-speak.prompt.md`).
 - `run_controlled(settings)` builds the sensor and outputs from `settings.trigger`, creates the `CostTracker`, runs `RunController`, and prints the run total in `finally`.
 
 ### 7.6 Entry point (`__main__.py`)
@@ -324,7 +324,7 @@ Steps 1-5 are completed and verified on Windows before touching the Pi.
 ## 12. Future work (provisioned for, not implemented)
 
 - **Eye-flash output.** `RunController` takes `outputs: Sequence[ActivationOutput]` and pulses them concurrently, so a second GPIO (with its own pin and duration settings) is a new `ActivationOutput` instance and a config entry. No change to the controller or conversation. For now the list has one element (GPIO22).
-- **Witch speaks first.** `Conversation._opening()` is the hook. A later change sends a text item plus `response.create` through a new `RealtimeClient.prompt(text)` method after activation. The idle timer already starts at activation, so a witch that speaks first behaves correctly with no timer changes.
+- **Witch speaks first.** Designed in `design-document-witch-first-to-speak.prompt.md`: a text cue is sent through a new `RealtimeClient.prompt(text)` at the start of `Conversation._session` after activation. The idle timer already starts at activation, so no timer changes are needed.
 - Optional keep-warm of the Realtime connection if the measured setup time (N5) is too slow for a walking visitor.
 
 ## 13. Testing

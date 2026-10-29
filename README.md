@@ -65,10 +65,20 @@ Stop with Ctrl+C. Each reply prints its cost and the run total. Every interactio
 | `WITCH_MAX_CONVERSATION_S` | `120` | Hard cap per activation, counted from the start of the pulse |
 | `WITCH_COOLDOWN_S` | `30` | Wait after a conversation before the sensor re-arms |
 | `WITCH_SETUP_TIMEOUT_S` | `20` | Maximum time to open the session, mic, speaker and TTS |
+| `WITCH_OPENING` | `on` | With `pir` or `keyboard`, the witch speaks first when a conversation starts. `off` (or `--no-opening`) makes her wait for the visitor |
+| `WITCH_OPENING_DELAY_MS` | `0` | Wait this long after activation before her opening line (0 to 5000), so she can speak once the jump lands |
 
 ## Raspberry Pi run control
 
 With `WITCH_TRIGGER=pir`, the app waits for motion, opens the conversation, pulses the witch, and ends the conversation on silence or the time cap. Then it cools down and re-arms only after the PIR goes low and high again.
+
+### Opening line
+
+When a conversation starts, the witch speaks first. The app sends one of ten stage cues (`OPENING_PROMPTS` in `src/witch/persona.py`) as a user message, so she opens with a line such as a toll demand or a riddle without waiting for a visitor. Each opening is drawn from a shuffled bag, so all ten appear before any repeats. The log shows each one as `opening> cue N/10 <id>`.
+
+Set `WITCH_OPENING=off` (or pass `--no-opening`) to keep the old behaviour. Set `WITCH_OPENING_DELAY_MS` if she speaks before the jump has landed.
+
+The persona is identical on every activation, so OpenAI's prompt cache can reuse it. The `cached` figure in each cost line shows whether it did. Tune the cue wording by trying all ten with both personas and rewording any that read badly.
 
 Wiring (BCM numbering):
 
@@ -107,6 +117,10 @@ Troubleshooting:
 - PIR triggers at start-up: raise `WITCH_PIR_WARMUP_S`.
 - PIR retriggers constantly or never re-arms: shorten the module's hold time and check the 3.3 V level and GPIO27 wiring.
 - No audio under systemd: add the service user to the `audio` group and set `WITCH_INPUT_DEVICE` / `WITCH_OUTPUT_DEVICE`.
+- Witch speaks over the jump or before it lands: set `WITCH_OPENING_DELAY_MS` (for example `800`).
+- First opening after a quiet spell is slow but quick afterwards: the prompt cache was cold. This is expected.
+- `cached 0` on every activation: something changed the prefix. Check that `WITCH_PERSONA` and the prompt text are unchanged between runs.
+- Witch says "stage cue" aloud or describes the cue: tighten the rule in `_build_prompt` in `src/witch/persona.py`.
 
 ## Tests
 

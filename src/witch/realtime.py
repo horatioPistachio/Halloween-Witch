@@ -97,6 +97,15 @@ class RealtimeClient:
             audio=base64.b64encode(pcm).decode("ascii")
         )
 
+    async def prompt(self, text: str) -> None:
+        """Add a user message and ask for a reply in the session's persona."""
+        conn = self._connection()
+        await conn.conversation.item.create(
+            item={"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}
+        )
+        # No response-level instructions: they would replace the persona and break the prompt cache.
+        await conn.response.create()
+
     async def events(self) -> AsyncIterator[ClientEvent]:
         async for event in self._connection():
             mapped = _map_event(event)

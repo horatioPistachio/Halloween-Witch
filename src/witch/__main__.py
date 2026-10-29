@@ -47,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
         "keyboard: Enter simulates motion (default: WITCH_TRIGGER or none)",
     )
     parser.add_argument("--hw-test", action="store_true", help="check PIR and witch wiring on the Pi and exit")
+    parser.add_argument(
+        "--no-opening",
+        action="store_true",
+        help="do not have the witch speak first when a conversation starts (default: WITCH_OPENING or on)",
+    )
     parser.add_argument("--say", metavar="TEXT", help="speak TEXT with ElevenLabs and exit")
     parser.add_argument("--log-level", help="DEBUG, INFO, WARNING or ERROR")
     args = parser.parse_args(argv)
@@ -78,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
             log_level=args.log_level,
             tts=tts,
             trigger=trigger,
+            opening=False if args.no_opening else None,
             require_openai=not (saying or args.hw_test),
         )
     except ConfigError as exc:

@@ -1,4 +1,4 @@
-"""ElevenLabs client tests using httpx.MockTransport (no network)."""
+"""ElevenLabs SDK wrapper tests using httpx.MockTransport (no network)."""
 
 import asyncio
 import json
