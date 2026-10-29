@@ -19,7 +19,14 @@ DEFAULT_USAGE_LOG = "usage.jsonl"
 DEFAULT_MAX_OUTPUT_TOKENS = 600
 VAD_TYPES = ("semantic_vad", "server_vad")
 REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
-DEFAULT_VOICE_ID = "xBIfEFAROTtux2FvqTLj"
+VOICES = {
+    "seer": "7NsaqHdLuKNFvEfjpUno",
+    "witch": "xBIfEFAROTtux2FvqTLj",
+    "lilith": "mLw8kuDeVGqVstOYjRII",
+    "selna": "2aL479c8D3QMIPExj0tw",
+}
+DEFAULT_VOICE = "witch"
+DEFAULT_VOICE_ID = VOICES[DEFAULT_VOICE]
 DEFAULT_TTS_MODEL = "eleven_v4_turbo"
 DEFAULT_GATE_TAIL_MS = 400
 TAG_CAPABLE_TTS_PREFIXES = ("eleven_v3", "eleven_v4")
@@ -86,6 +93,7 @@ def load_settings(
     *,
     model: str | None = None,
     persona: str | None = None,
+    voice: str | None = None,
     device: str | None = None,
     log_level: str | None = None,
     output_device: str | None = None,
@@ -125,7 +133,12 @@ def load_settings(
     if tts_enabled and not eleven_key:
         raise ConfigError("ELEVEN_LABS_API_KEY not set. Add it to .env or run with --no-tts")
 
-    voice_id = _get(environ, "WITCH_VOICE_ID", DEFAULT_VOICE_ID)
+    if voice is not None:
+        if voice not in VOICES:
+            raise ConfigError(f"voice must be one of: {', '.join(VOICES)}")
+        voice_id = VOICES[voice]
+    else:
+        voice_id = _get(environ, "WITCH_VOICE_ID", DEFAULT_VOICE_ID)
     if not voice_id.isalnum():
         raise ConfigError("WITCH_VOICE_ID must contain only letters and digits")
 

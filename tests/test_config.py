@@ -87,6 +87,22 @@ def test_tts_defaults():
     assert settings.gate_tail_s == pytest.approx(0.4)
 
 
+def test_cli_voice_selects_named_voice_and_overrides_env():
+    assert load_settings(voice="seer", environ=KEY_ENV).voice_id == "7NsaqHdLuKNFvEfjpUno"
+    assert load_settings(voice="selna", environ={**KEY_ENV, "WITCH_VOICE_ID": "abc123"}).voice_id == (
+        "2aL479c8D3QMIPExj0tw"
+    )
+
+
+def test_env_voice_id_used_without_cli_voice():
+    assert load_settings(environ={**KEY_ENV, "WITCH_VOICE_ID": "abc123"}).voice_id == "abc123"
+
+
+def test_unknown_cli_voice_rejected():
+    with pytest.raises(ConfigError, match="voice must be one of"):
+        load_settings(voice="bogus", environ=KEY_ENV)
+
+
 def test_eleven_key_hidden_in_repr():
     assert "el-test-456" not in repr(load_settings(environ=KEY_ENV))
 

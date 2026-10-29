@@ -15,7 +15,7 @@ from witch.app import run, run_controlled, say
 from witch.audio.base import PlaybackError
 from witch.audio.mic import list_input_devices
 from witch.audio.speaker import list_output_devices
-from witch.config import ConfigError, load_settings
+from witch.config import DEFAULT_VOICE, VOICES, ConfigError, load_settings
 from witch.hardware.selftest import run_selftest
 
 
@@ -34,6 +34,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-device", help="output device index or name substring")
     parser.add_argument("--model", help="Realtime model (default: WITCH_MODEL or gpt-realtime-2.1-mini)")
     parser.add_argument("--persona", choices=("kids", "evil"), help="kids (default) or evil system prompt")
+    parser.add_argument(
+        "--voice",
+        choices=tuple(VOICES),
+        help="ElevenLabs voice: " + ", ".join(VOICES) + f" (default: WITCH_VOICE_ID or {DEFAULT_VOICE})",
+    )
     parser.add_argument("--no-tts", action="store_true", help="print replies only; do not call ElevenLabs")
     parser.add_argument(
         "--trigger",
@@ -67,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings(
             model=args.model,
             persona=args.persona,
+            voice=args.voice,
             device=args.device,
             output_device=args.output_device,
             log_level=args.log_level,
