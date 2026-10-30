@@ -55,10 +55,12 @@ Stop with Ctrl+C. Each reply prints its cost and the run total. Every interactio
 | `WITCH_MAX_OUTPUT_TOKENS` | `600` | Per-reply cap on output tokens |
 | `WITCH_USAGE_LOG` | `usage.jsonl` | Per-interaction cost log |
 | `WITCH_LOG_LEVEL` | `INFO` | Logging level |
-| `WITCH_TRIGGER` | `none` | `none` (always listening), `pir` (motion sensor, Raspberry Pi), or `keyboard` (Enter = motion, for laptop tests) |
-| `WITCH_PIR_PIN` | `27` | BCM pin for the PIR signal |
-| `WITCH_PIR_POWER_PIN` | `17` | BCM pin that powers the PIR; empty disables it |
-| `WITCH_ACTIVATE_PIN` | `22` | BCM pin that triggers the witch (3.3 V) |
+| `WITCH_TRIGGER` | `none` | `none` (always listening), `pir` (motion sensor), or `keyboard` (Enter = motion, for laptop tests) |
+| `WITCH_HARDWARE` | `gpio` | `gpio` (Raspberry Pi pins) or `esp32` (ESP32 Feather over USB serial, see below). Also `--hardware` |
+| `WITCH_ESP32_PORT` | required for `esp32` | Serial port of the Feather, for example `COM7` |
+| `WITCH_PIR_PIN` | `27` | PIR signal pin (BCM on `gpio`, ESP32 GPIO on `esp32`; same for the next two) |
+| `WITCH_PIR_POWER_PIN` | `17` (`33` on `esp32`) | Pin that powers the PIR; empty disables it |
+| `WITCH_ACTIVATE_PIN` | `22` (`32` on `esp32`) | Pin that triggers the witch (3.3 V) |
 | `WITCH_PIR_WARMUP_S` | `60` | Seconds to ignore the PIR after start-up |
 | `WITCH_ACTIVATE_MS` | `1000` | Length of the witch trigger pulse |
 | `WITCH_IDLE_TIMEOUT_S` | `30` | Silence that ends a conversation (the witch's speech doesn't count) |
@@ -121,6 +123,45 @@ Troubleshooting:
 - First opening after a quiet spell is slow but quick afterwards: the prompt cache was cold. This is expected.
 - `cached 0` on every activation: something changed the prefix. Check that `WITCH_PERSONA` and the prompt text are unchanged between runs.
 - Witch says "stage cue" aloud or describes the cue: tighten the rule in `_build_prompt` in `src/witch/persona.py`.
+
+## Laptop + ESP32 Feather V2
+
+When the Pi's input devices are a problem, run the app on a laptop and let an Adafruit ESP32 Feather V2 provide the GPIO over USB serial. The Feather runs `mcu-firmware/ESP32-USB-GPIO-ESPIDF` and the app talks to it through the `esp32-usb-gpio` library. The state machine is identical to the Pi's.
+
+Wiring (raw ESP32 GPIO numbers, not BCM):
+
+| Signal | Feather pin | GPIO | Notes |
+|---|---|---|---|
+| PIR signal | D27 | 27 | Must be 3.3 V logic. |
+| PIR power | D33 | 33 | Set `WITCH_PIR_POWER_PIN=` (empty) if the module needs 5 V and feed it from the USB pin. |
+| Witch trigger | D32 | 32 | 3.3 V output. Drive the witch through a transistor or MOSFET with a pull-down, so it stays off while the board resets. |
+
+Avoid D12, D14 and D15 (boot strapping or PWM at boot, which can fire the witch on reset), and A2, A3, A4 and D37 (input-only). The app rejects flash pins and input-only output pins.
+
+```powershell
+python -m pip install -e ".[dev,esp32]"
+```
+
+`.env`:
+
+```
+WITCH_TRIGGER=pir
+WITCH_HARDWARE=esp32
+WITCH_ESP32_PORT=COM7
+```
+
+Close any serial monitor first; only one program can hold the port. Opening the port resets the board, so start-up takes a couple of seconds. Bench test with the witch **disconnected**:
+
+```powershell
+python -m witch --hw-test   # prints PIR level for 10 s, then pulses GPIO32 once
+```
+
+If the PIR misbehaves, `python -m witch --trigger keyboard --hardware esp32` lets Enter stand in for motion while still firing the real witch. To restart after a crash: `while ($true) { python -m witch; Start-Sleep 5 }`.
+
+Troubleshooting:
+- `Could not open COM7`: another program holds the port, or the port number changed (see Device Manager).
+- `ESP32 ... is not responding` or `stopped answering`: the Feather is not running the firmware, or the cable was pulled. The app exits so a supervisor can restart it.
+- Bench-test the pulse on an LED or multimeter before connecting the witch.
 
 ## Tests
 

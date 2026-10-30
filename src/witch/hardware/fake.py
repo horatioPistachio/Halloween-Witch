@@ -49,11 +49,11 @@ class KeyboardSensor:
 class LoggingOutput(ActivationOutput):
     """Logs pulses instead of driving a pin."""
 
-    def _open(self) -> None:
+    async def _open(self) -> None:
         log.info("%s: (simulated) output ready", self.name)
 
-    def _set(self, high: bool) -> None:
+    async def _set(self, high: bool) -> None:
         log.info("%s: %s", self.name, "HIGH" if high else "low")
 
-    def _close(self) -> None:
+    async def _close(self) -> None:
         log.info("%s: (simulated) output closed", self.name)

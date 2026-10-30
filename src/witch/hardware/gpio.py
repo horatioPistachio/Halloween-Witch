@@ -75,14 +75,14 @@ class GpioOutput(ActivationOutput):
         self._pin = pin
         self._device: Any = None
 
-    def _open(self) -> None:
+    async def _open(self) -> None:
         gz = _gpiozero()
         try:
             self._device = gz.DigitalOutputDevice(self._pin, initial_value=False)
         except Exception as exc:
             raise HardwareError(f"Could not open {self.name} on GPIO{self._pin}: {exc}") from exc
 
-    def _set(self, high: bool) -> None:
+    async def _set(self, high: bool) -> None:
         if self._device is None:
             return
         if high:
@@ -90,7 +90,7 @@ class GpioOutput(ActivationOutput):
         else:
             self._device.off()
 
-    def _close(self) -> None:
+    async def _close(self) -> None:
         if self._device is not None:
             self._device.close()
             self._device = None

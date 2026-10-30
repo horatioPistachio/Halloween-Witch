@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from witch.persona import PERSONA_PROMPTS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MODEL = "gpt-realtime-2.1" # or "gpt-realtime-2.1-mini"
+DEFAULT_MODEL = "gpt-realtime-2.1-mini"
 DEFAULT_PERSONA = "kids"
 DEFAULT_USAGE_LOG = "usage.jsonl"
 DEFAULT_MAX_OUTPUT_TOKENS = 600
@@ -33,10 +33,18 @@ DEFAULT_TTS_MODEL = "eleven_v4_turbo"
 DEFAULT_GATE_TAIL_MS = 400
 TAG_CAPABLE_TTS_PREFIXES = ("eleven_v3", "eleven_v4")
 TRIGGERS = ("none", "pir", "keyboard")
+HARDWARE = ("gpio", "esp32")
 MAX_BCM_PIN = 27
 DEFAULT_PIR_PIN = 27
 DEFAULT_PIR_POWER_PIN = 17
 DEFAULT_ACTIVATE_PIN = 22
+# Raw ESP32 GPIO numbers on the Feather V2 (D27, D33, D32): none are strapping, input-only or flash pins.
+DEFAULT_ESP32_PIR_PIN = 27
+DEFAULT_ESP32_PIR_POWER_PIN = 33
+DEFAULT_ESP32_ACTIVATE_PIN = 32
+MAX_ESP32_PIN = 39
+ESP32_FLASH_PINS = range(6, 12)
+ESP32_INPUT_ONLY_PINS = range(34, 40)
 DEFAULT_PIR_WARMUP_S = 60.0
 DEFAULT_ACTIVATE_MS = 1000
 DEFAULT_IDLE_TIMEOUT_S = 30.0
@@ -44,7 +52,7 @@ DEFAULT_MAX_CONVERSATION_S = 120.0
 DEFAULT_COOLDOWN_S = 30.0
 DEFAULT_SETUP_TIMEOUT_S = 20.0
 DEFAULT_OPENING_DELAY_MS = 0
-MAX_OPENING_DELAY_MS = 5000
+MAX_OPENING_DELAY_MS = 60000
 
 
 class ConfigError(RuntimeError):
@@ -70,6 +78,8 @@ class Settings:
     output_device: int | str | None = None
     gate_tail_ms: int = DEFAULT_GATE_TAIL_MS
     trigger: str = "none"
+    hardware: str = "gpio"
+    esp32_port: str | None = None
     pir_pin: int = DEFAULT_PIR_PIN
     pir_power_pin: int | None = DEFAULT_PIR_POWER_PIN
     activate_pin: int = DEFAULT_ACTIVATE_PIN
@@ -109,6 +119,7 @@ def load_settings(
     output_device: str | None = None,
     tts: bool | None = None,
     trigger: str | None = None,
+    hardware: str | None = None,
     opening: bool | None = None,
     require_openai: bool = True,
     environ: Mapping[str, str] | None = None,
@@ -161,7 +172,10 @@ def load_settings(
     if trigger_name not in TRIGGERS:
         raise ConfigError(f"WITCH_TRIGGER must be one of: {', '.join(TRIGGERS)}")
     # Run-control values are only read when a trigger is in use, so a laptop .env needs none of them.
-    run_control = _parse_run_control(environ, trigger_name) if trigger_name != "none" else {}
+    hardware_name = (hardware or _get(environ, "WITCH_HARDWARE", "gpio")).lower()
+    if trigger_name != "none" and hardware_name not in HARDWARE:
+        raise ConfigError(f"WITCH_HARDWARE must be one of: {', '.join(HARDWARE)}")
+    run_control = _parse_run_control(environ, trigger_name, hardware_name) if trigger_name != "none" else {}
     if opening is not None:
         run_control["opening"] = opening
 
@@ -187,11 +201,30 @@ def load_settings(
     )
 
 
-def _parse_run_control(environ: Mapping[str, str], trigger: str) -> dict[str, object]:
+def _parse_run_control(environ: Mapping[str, str], trigger: str, hardware: str) -> dict[str, object]:
+    esp32 = hardware == "esp32"
+    esp32_port = _get(environ, "WITCH_ESP32_PORT", "")
+    if esp32 and not esp32_port:
+        raise ConfigError("WITCH_ESP32_PORT must be set (for example COM7) when WITCH_HARDWARE=esp32")
+    max_pin = MAX_ESP32_PIN if esp32 else MAX_BCM_PIN
     values: dict[str, object] = {
-        "pir_pin": _parse_pin(environ, "WITCH_PIR_PIN", DEFAULT_PIR_PIN),
-        "pir_power_pin": _parse_optional_pin(environ, "WITCH_PIR_POWER_PIN", DEFAULT_PIR_POWER_PIN),
-        "activate_pin": _parse_pin(environ, "WITCH_ACTIVATE_PIN", DEFAULT_ACTIVATE_PIN),
+        "hardware": hardware,
+        "esp32_port": esp32_port or None,
+        "pir_pin": _parse_pin(
+            environ, "WITCH_PIR_PIN", DEFAULT_ESP32_PIR_PIN if esp32 else DEFAULT_PIR_PIN, maximum=max_pin
+        ),
+        "pir_power_pin": _parse_optional_pin(
+            environ,
+            "WITCH_PIR_POWER_PIN",
+            DEFAULT_ESP32_PIR_POWER_PIN if esp32 else DEFAULT_PIR_POWER_PIN,
+            maximum=max_pin,
+        ),
+        "activate_pin": _parse_pin(
+            environ,
+            "WITCH_ACTIVATE_PIN",
+            DEFAULT_ESP32_ACTIVATE_PIN if esp32 else DEFAULT_ACTIVATE_PIN,
+            maximum=max_pin,
+        ),
         "pir_warmup_s": _parse_float(environ, "WITCH_PIR_WARMUP_S", DEFAULT_PIR_WARMUP_S, minimum=0.0),
         "activate_ms": _parse_int(environ, "WITCH_ACTIVATE_MS", DEFAULT_ACTIVATE_MS),
         "idle_timeout_s": _parse_float(
@@ -215,8 +248,10 @@ def _parse_run_control(environ: Mapping[str, str], trigger: str) -> dict[str, ob
     }
     if values["max_conversation_s"] < values["idle_timeout_s"]:  # type: ignore[operator]
         raise ConfigError("WITCH_MAX_CONVERSATION_S must be at least WITCH_IDLE_TIMEOUT_S")
+    if esp32:
+        _check_esp32_pins(values)
     if trigger == "pir":
-        # Only the PIR path drives real pins; the keyboard trigger uses a logging output.
+        # Only the PIR path drives the sensor pins; the keyboard trigger only needs the activate pin.
         pins = [values["pir_pin"], values["pir_power_pin"], values["activate_pin"]]
         used = [pin for pin in pins if pin is not None]
         if len(set(used)) != len(used):
@@ -224,17 +259,31 @@ def _parse_run_control(environ: Mapping[str, str], trigger: str) -> dict[str, ob
     return values
 
 
-def _parse_pin(environ: Mapping[str, str], name: str, default: int) -> int:
+def _check_esp32_pins(values: dict[str, object]) -> None:
+    names = {"pir_pin": "WITCH_PIR_PIN", "pir_power_pin": "WITCH_PIR_POWER_PIN", "activate_pin": "WITCH_ACTIVATE_PIN"}
+    for key, name in names.items():
+        pin = values[key]
+        if pin is None:
+            continue
+        if pin in ESP32_FLASH_PINS:
+            raise ConfigError(f"{name}: GPIO{pin} is connected to the ESP32's flash and cannot be used")
+        if key != "pir_pin" and pin in ESP32_INPUT_ONLY_PINS:
+            raise ConfigError(f"{name}: GPIO{pin} is input-only on the ESP32 and cannot drive an output")
+
+
+def _parse_pin(environ: Mapping[str, str], name: str, default: int, *, maximum: int = MAX_BCM_PIN) -> int:
     value = _parse_int(environ, name, default, minimum=0)
-    if value > MAX_BCM_PIN:
-        raise ConfigError(f"{name} must be between 0 and {MAX_BCM_PIN}")
+    if value > maximum:
+        raise ConfigError(f"{name} must be between 0 and {maximum}")
     return value
 
 
-def _parse_optional_pin(environ: Mapping[str, str], name: str, default: int) -> int | None:
+def _parse_optional_pin(
+    environ: Mapping[str, str], name: str, default: int, *, maximum: int = MAX_BCM_PIN
+) -> int | None:
     if environ.get(name, str(default)).strip() == "":
         return None
-    return _parse_pin(environ, name, default)
+    return _parse_pin(environ, name, default, maximum=maximum)
 
 
 def _parse_float(

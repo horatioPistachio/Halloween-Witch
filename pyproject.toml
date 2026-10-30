@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 pi = ["gpiozero>=2.0"]
+esp32 = ["esp32-usb-gpio>=0.1.6"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

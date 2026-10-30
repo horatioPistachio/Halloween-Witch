@@ -143,13 +143,13 @@ class FakeOutput(ActivationOutput):
         self.levels: list[bool] = []
         self.open = False
 
-    def _open(self) -> None:
+    async def _open(self) -> None:
         self.open = True
 
-    def _set(self, high: bool) -> None:
+    async def _set(self, high: bool) -> None:
         self.levels.append(high)
 
-    def _close(self) -> None:
+    async def _close(self) -> None:
         self.open = False
 
 

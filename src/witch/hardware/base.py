@@ -56,32 +56,39 @@ class ActivationOutput(ABC):
         self._pulsing = False
 
     async def __aenter__(self) -> ActivationOutput:
-        self._open()
-        self._set(False)
+        await self._open()
+        try:
+            await self._set(False)
+        except BaseException:
+            await self._close()
+            raise
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
         try:
-            self._set(False)
+            await self._set(False)
         finally:
-            self._close()
+            await self._close()
 
     async def pulse(self, duration_s: float) -> None:
         if self._pulsing:
             raise RuntimeError(f"{self.name}: pulse already in progress")
         self._pulsing = True
         try:
-            self._set(True)
+            await self._set(True)
             await asyncio.sleep(duration_s)
         finally:
-            self._set(False)
-            self._pulsing = False
+            try:
+                # Shielded so a second cancel still lets the output be driven low.
+                await asyncio.shield(self._set(False))
+            finally:
+                self._pulsing = False
 
     @abstractmethod
-    def _open(self) -> None: ...
+    async def _open(self) -> None: ...
 
     @abstractmethod
-    def _set(self, high: bool) -> None: ...
+    async def _set(self, high: bool) -> None: ...
 
     @abstractmethod
-    def _close(self) -> None: ...
+    async def _close(self) -> None: ...

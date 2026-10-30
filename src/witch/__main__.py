@@ -16,6 +16,7 @@ from witch.audio.base import PlaybackError
 from witch.audio.mic import list_input_devices
 from witch.audio.speaker import list_output_devices
 from witch.config import DEFAULT_VOICE, VOICES, ConfigError, load_settings
+from witch.hardware.base import HardwareError
 from witch.hardware.selftest import run_selftest
 
 
@@ -46,7 +47,12 @@ def main(argv: list[str] | None = None) -> int:
         help="none: listen continuously; pir: PIR sensor starts conversations; "
         "keyboard: Enter simulates motion (default: WITCH_TRIGGER or none)",
     )
-    parser.add_argument("--hw-test", action="store_true", help="check PIR and witch wiring on the Pi and exit")
+    parser.add_argument(
+        "--hardware",
+        choices=("gpio", "esp32"),
+        help="gpio: Raspberry Pi pins; esp32: ESP32 Feather over USB serial (default: WITCH_HARDWARE or gpio)",
+    )
+    parser.add_argument("--hw-test", action="store_true", help="check PIR and witch wiring and exit")
     parser.add_argument(
         "--no-opening",
         action="store_true",
@@ -83,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
             log_level=args.log_level,
             tts=tts,
             trigger=trigger,
+            hardware=args.hardware,
             opening=False if args.no_opening else None,
             require_openai=not (saying or args.hw_test),
         )
@@ -111,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     except (KeyboardInterrupt, asyncio.CancelledError):
         print("\nStopped.", file=sys.stderr)
         return 0
-    except (ConfigError, PlaybackError) as exc:
+    except (ConfigError, PlaybackError, HardwareError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
