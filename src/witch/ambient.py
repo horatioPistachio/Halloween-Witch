@@ -20,6 +20,7 @@ from witch.audio.base import SAMPLE_RATE, PlaybackError
 from witch.audio.speaker import SpeakerSink
 from witch.bag import ShuffleBag
 from witch.config import Settings
+from witch.eyes import Eyes, NullEyes
 from witch.phrases import PERIODIC_PHRASES
 from witch.tts.base import TTSError
 from witch.tts.elevenlabs import ElevenLabsTTS
@@ -107,12 +108,14 @@ class AmbientPlayer:
         cache: PhraseCache,
         tts_factory: Callable[[Settings], Any] = ElevenLabsTTS,
         sink_factory: Callable[[Settings], Any] = SpeakerSink,
+        eyes: Eyes | None = None,
     ) -> None:
         self._settings = settings
         self._bag = bag
         self._cache = cache
         self._tts_factory = tts_factory
         self._sink_factory = sink_factory
+        self._eyes: Eyes = eyes if eyes is not None else NullEyes()
 
     async def play_next(self) -> None:
         phrase = self._bag.next()
@@ -137,7 +140,8 @@ class AmbientPlayer:
         async with self._sink_factory(self._settings) as sink:
             if pcm is not None:
                 log.info('ambient> "%s" (cached)', phrase)
-                await sink.play(_chunks(pcm))
+                async with self._eyes.track(_chunks(pcm)) as chunks:
+                    await sink.play(chunks)
                 return
             recorded = bytearray()
             async with self._tts_factory(self._settings) as tts:
@@ -147,7 +151,8 @@ class AmbientPlayer:
                         recorded.extend(chunk)
                         yield chunk
 
-                await sink.play(audio())
+                async with self._eyes.track(audio()) as chunks:
+                    await sink.play(chunks)
         # Reached only when playback finished normally, so a partial clip is never cached.
         if recorded and len(recorded) % 2 == 0:
             await self._cache.write(key, bytes(recorded))
@@ -160,7 +165,7 @@ async def _chunks(pcm: bytes) -> AsyncIterator[bytes]:
 
 
 def build_ambient(
-    settings: Settings, phrases: Sequence[str] = PERIODIC_PHRASES
+    settings: Settings, phrases: Sequence[str] = PERIODIC_PHRASES, eyes: Eyes | None = None
 ) -> AmbientSound | None:
     if settings.ambient_interval_s <= 0:
         log.info("Ambient sounds off (WITCH_AMBIENT_INTERVAL_S=0)")
@@ -171,4 +176,4 @@ def build_ambient(
     if not phrases:
         log.info("Ambient sounds off (no phrases)")
         return None
-    return AmbientPlayer(settings, ShuffleBag(phrases), PhraseCache(settings.phrase_cache_dir))
+    return AmbientPlayer(settings, ShuffleBag(phrases), PhraseCache(settings.phrase_cache_dir), eyes=eyes)

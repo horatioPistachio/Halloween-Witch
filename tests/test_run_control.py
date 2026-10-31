@@ -277,6 +277,7 @@ async def _run_controller(
     ambient: FakeAmbient | None = None,
     output: FakeOutput | None = None,
     rng: random.Random | FixedRng | None = None,
+    eyes: object | None = None,
 ) -> FakeOutput:
     output = output or FakeOutput()
     controller = RunController(
@@ -286,6 +287,7 @@ async def _run_controller(
         factory,
         (FatalTestError,),
         ambient=ambient,
+        eyes=eyes,  # type: ignore[arg-type]
         clock=time.clock,
         sleep=time.sleep,
         rng=rng if rng is not None else random.Random(1),  # type: ignore[arg-type]
@@ -487,4 +489,136 @@ def test_no_ambient_player_means_no_timer():
         assert conversations.made == []
 
     asyncio.run(scenario())
+
+
+# --- eyes --------------------------------------------------------------------
+
+
+class FakeEyes:
+    def __init__(self, output: FakeOutput | None = None) -> None:
+        self.output = output
+        self.flickers: list[float] = []
+        self.hold_offs: list[tuple[float, list[bool]]] = []
+        self.time: FakeTime | None = None
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self) -> FakeEyes:
+        self.entered = True
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        self.exited = True
+
+    def flicker(self) -> None:
+        self.flickers.append(self.time.now if self.time else 0.0)
+
+    async def hold_off(self, seconds: float) -> None:
+        self.hold_offs.append((seconds, list(self.output.levels) if self.output else []))
+
+
+def test_the_eyes_flicker_on_each_pir_rising_edge_while_waiting():
+    async def scenario() -> None:
+        time = FakeTime(stop_at=30)
+        eyes = FakeEyes()
+        eyes.time = time
+        # Two short bursts that never reach the threshold.
+        sensor = FakeSensor(time, level=lambda t: 1 <= t < 2 or 10 <= t < 11)
+        settings = _controller_settings(WITCH_PRESENCE_THRESHOLD_S="100")
+        await _run_controller(time, settings, sensor, _Conversations(), eyes=eyes)
+        assert len(eyes.flickers) == 2
+        assert eyes.flickers[0] == pytest.approx(1.0, abs=0.3)
+        assert eyes.flickers[1] == pytest.approx(10.0, abs=0.3)
+        assert eyes.entered and eyes.exited
+
+    asyncio.run(scenario())
+
+
+def test_the_eyes_are_released_for_the_pcb_before_the_pulse_starts():
+    async def scenario() -> None:
+        time = FakeTime(stop_at=5)
+        conversations = _Conversations()
+        output = FakeOutput()
+        eyes = FakeEyes(output)
+        sensor = FakeSensor(time, level=lambda t: not conversations.made)
+        settings = _controller_settings(WITCH_EYES_PCB_HOLDOFF_S="12")
+        await _run_controller(time, settings, sensor, conversations, output=output, eyes=eyes)
+        # Called once, with the output still low (the pulse has not started).
+        assert eyes.hold_offs == [(12.0, [False])]
+        assert True in output.levels
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_setup_does_not_start_the_pcb_window():
+    async def scenario() -> None:
+        time = FakeTime(stop_at=5)
+        attempts: list[int] = []
+
+        def failing() -> FakeConversation:
+            attempts.append(1)
+            return FakeConversation(setup_error=OSError("no mic"))
+
+        eyes = FakeEyes()
+        sensor = FakeSensor(time, level=lambda t: not attempts)
+        await _run_controller(time, _controller_settings(), sensor, failing, eyes=eyes)
+        assert eyes.hold_offs == []
+
+    asyncio.run(scenario())
+
+
+def test_eye_settings_defaults_and_overrides():
+    settings = load_settings(environ=_env(WITCH_TRIGGER="pir"))
+    assert settings.eyes
+    assert settings.eyes_pin == 12
+    assert settings.eyes_max_duty == 60.0
+    assert settings.eyes_speak_level == 0.6
+    assert settings.eyes_flicker_level == 0.15
+    assert settings.eyes_flicker_cooldown_s == 5.0
+    assert settings.eyes_pcb_holdoff_s == 15.0
+    settings = load_settings(
+        environ=_env(
+            WITCH_TRIGGER="pir",
+            WITCH_EYES="off",
+            WITCH_EYES_PIN="13",
+            WITCH_EYES_MAX_DUTY="40",
+            WITCH_EYES_SPEAK_LEVEL="1",
+            WITCH_EYES_FLICKER_LEVEL="0.05",
+            WITCH_EYES_FLICKER_COOLDOWN_S="0",
+            WITCH_EYES_PCB_HOLDOFF_S="20",
+        )
+    )
+    assert (settings.eyes, settings.eyes_pin, settings.eyes_max_duty) == (False, 13, 40.0)
+    assert (settings.eyes_speak_level, settings.eyes_flicker_level) == (1.0, 0.05)
+    assert (settings.eyes_flicker_cooldown_s, settings.eyes_pcb_holdoff_s) == (0.0, 20.0)
+
+
+def test_the_cli_can_switch_the_eyes_off():
+    assert not load_settings(trigger="pir", eyes=False, environ=_env()).eyes
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"WITCH_EYES": "maybe"},
+        {"WITCH_EYES_MAX_DUTY": "0"},
+        {"WITCH_EYES_MAX_DUTY": "101"},
+        {"WITCH_EYES_SPEAK_LEVEL": "0"},
+        {"WITCH_EYES_SPEAK_LEVEL": "1.5"},
+        {"WITCH_EYES_FLICKER_LEVEL": "abc"},
+        {"WITCH_EYES_FLICKER_COOLDOWN_S": "-1"},
+        {"WITCH_EYES_PCB_HOLDOFF_S": "-1"},
+        {"WITCH_EYES_PIN": "28"},
+        {"WITCH_EYES_PIN": "22"},
+        {"WITCH_EYES_PIN": "27"},
+    ],
+)
+def test_invalid_eye_settings_rejected(extra):
+    with pytest.raises(ConfigError):
+        load_settings(environ=_env(WITCH_TRIGGER="pir", **extra))
+
+
+def test_a_clashing_eye_pin_is_fine_when_the_eyes_are_off():
+    settings = load_settings(environ=_env(WITCH_TRIGGER="pir", WITCH_EYES="off", WITCH_EYES_PIN="27"))
+    assert not settings.eyes
 

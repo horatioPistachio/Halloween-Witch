@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Self
 
-from witch.hardware.base import ActivationOutput, EdgeLatch, HardwareError
+from witch.hardware.base import ActivationOutput, EdgeLatch, EyeLight, HardwareError
 
 _STILL_POLL_S = 0.05
 
@@ -97,3 +97,37 @@ class GpioOutput(ActivationOutput):
         if self._device is not None:
             self._device.close()
             self._device = None
+
+
+class GpioEyes(EyeLight):
+    """The eye LEDs on a Pi pin, dimmed with gpiozero PWM.
+
+    A gpiozero device holds its pin, so going high impedance means closing it; the next drive recreates it.
+    """
+
+    PWM_HZ = 1000
+
+    def __init__(self, name: str, pin: int, max_duty: float) -> None:
+        super().__init__(name, max_duty)
+        self._pin = pin
+        self._device: Any = None
+
+    async def _open(self) -> None:
+        _gpiozero()
+
+    async def _drive(self, duty: float) -> None:
+        if self._device is not None:
+            self._device.value = duty
+            return
+        try:
+            self._device = _gpiozero().PWMLED(self._pin, initial_value=duty, frequency=self.PWM_HZ)
+        except Exception as exc:
+            raise HardwareError(f"Could not open {self.name} on GPIO{self._pin}: {exc}") from exc
+
+    async def _release(self) -> None:
+        if self._device is not None:
+            device, self._device = self._device, None
+            device.close()
+
+    async def _close(self) -> None:
+        await self._release()

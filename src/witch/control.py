@@ -15,6 +15,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Protocol, Self
 
 from witch.config import AMBIENT_JITTER, AMBIENT_RESET_FRACTION, Settings
+from witch.eyes import Eyes, NullEyes
 from witch.hardware.base import ActivationOutput, MotionSensor
 from witch.presence import PresenceTracker
 
@@ -104,6 +105,7 @@ class RunController:
         conversation_factory: ConversationFactory,
         fatal_errors: tuple[type[BaseException], ...],
         ambient: AmbientSound | None = None,
+        eyes: Eyes | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: random.Random | None = None,
@@ -114,12 +116,13 @@ class RunController:
         self._new_conversation = conversation_factory
         self._fatal = fatal_errors
         self._ambient = ambient
+        self._eyes: Eyes = eyes if eyes is not None else NullEyes()
         self._clock = clock
         self._sleep = sleep
         self._rng = rng if rng is not None else random.Random()
 
     async def run(self) -> None:
-        async with self._output, self._sensor:
+        async with self._output, self._sensor, self._eyes:
             await self._warm_up()
             while True:
                 await self._await_presence()
@@ -149,6 +152,8 @@ class RunController:
             reached = tracker.update(active, dt)
             if active != was_active:
                 was_active = active
+                if active:
+                    self._eyes.flicker()
                 log.info(
                     "presence> PIR %s, confidence %.1f / %.1f s",
                     "high" if active else "low",
@@ -211,6 +216,8 @@ class RunController:
         s = self._settings
         timer = IdleTimer(s.idle_timeout_s)
         timer.start()
+        # The witch's own PCB lights the eyes for the jump, so our pin must be free before the pulse starts.
+        await self._eyes.hold_off(s.eyes_pcb_holdoff_s)
         pulse = asyncio.create_task(self._output.pulse(s.activate_ms / 1000))
         try:
             reason = await conversation.run(timer)

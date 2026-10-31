@@ -68,11 +68,18 @@ Stop with Ctrl+C. Each reply prints its cost and the run total. Every interactio
 | `WITCH_COOLDOWN_S` | `30` | Wait after a conversation before the sensor re-arms |
 | `WITCH_SETUP_TIMEOUT_S` | `20` | Maximum time to open the session, mic, speaker and TTS |
 | `WITCH_OPENING` | `on` | With `pir` or `keyboard`, the witch speaks first when a conversation starts. `off` (or `--no-opening`) makes her wait for the visitor |
-| `WITCH_OPENING_DELAY_MS` | `0` | Wait this long after activation before her opening line (0 to 5000), so she can speak once the jump lands |
+| `WITCH_OPENING_DELAY_MS` | `0` | Wait this long after activation before her opening line (0 to 60000), so she can speak once the jump lands |
 | `WITCH_PRESENCE_THRESHOLD_S` | `10` | Seconds of PIR-high needed before she activates. Each activation uses this x a random 0.5 to 1.5. `0` activates on the first blip |
 | `WITCH_PRESENCE_DECAY` | `0.5` | Confidence lost per second the PIR is low, so brief visits fade away. `0` never decays |
 | `WITCH_AMBIENT_INTERVAL_S` | `300` | Quiet time before she speaks on her own, x a random 0.5 to 1.5 each time. `0` turns it off |
 | `WITCH_PHRASE_CACHE_DIR` | `.cache/phrases` | Where her ambient phrases are stored once synthesised. Empty disables the cache |
+| `WITCH_EYES` | `on` | Drive the eye LEDs (`pir` or `keyboard` trigger only). `off` or `--no-eyes` disables them |
+| `WITCH_EYES_PIN` | `12` | Eye LED pin (GPIO12 on `esp32`, BCM12 on `gpio`). Must differ from the other pins |
+| `WITCH_EYES_MAX_DUTY` | `60` | Hard brightness ceiling, percent of full PWM duty (1 to 100) |
+| `WITCH_EYES_SPEAK_LEVEL` | `0.6` | Brightness while she speaks, as a fraction of the ceiling |
+| `WITCH_EYES_FLICKER_LEVEL` | `0.15` | Brightness of the motion flicker, as a fraction of the ceiling |
+| `WITCH_EYES_FLICKER_COOLDOWN_S` | `5` | Minimum time between flickers |
+| `WITCH_EYES_PCB_HOLDOFF_S` | `15` | Time from the start of the pulse that her own PCB drives the eyes; our pin is high impedance for it |
 
 ## Raspberry Pi run control
 
@@ -142,7 +149,7 @@ Troubleshooting:
 
 ## Laptop + ESP32 Feather V2
 
-When the Pi's input devices are a problem, run the app on a laptop and let an Adafruit ESP32 Feather V2 provide the GPIO over USB serial. The Feather runs `mcu-firmware/ESP32-USB-GPIO-ESPIDF` and the app talks to it through the `esp32-usb-gpio` library. The state machine is identical to the Pi's.
+When the Pi's input devices are a problem, run the app on a laptop and let an Adafruit ESP32 Feather V2 provide the GPIO over USB serial. The Feather runs `mcu-firmware/ESP32-USB-GPIO-ESPIDF` and The app talks to it through its own serial client (`witch/hardware/esp32_client.py`, built on `pyserial`) using the firmware's line protocol v2, documented in the firmware README. The firmware and the app must be upgraded together: the app refuses an older firmware and says to reflash. The state machine is identical to the Pi's.
 
 Wiring (raw ESP32 GPIO numbers, not BCM):
 
@@ -152,7 +159,7 @@ Wiring (raw ESP32 GPIO numbers, not BCM):
 | PIR power | D33 | 33 | Set `WITCH_PIR_POWER_PIN=` (empty) if the module needs 5 V and feed it from the USB pin. |
 | Witch trigger | D32 | 32 | 3.3 V output. Drive the witch through a transistor or MOSFET with a pull-down, so it stays off while the board resets. |
 
-Avoid D12, D14 and D15 (boot strapping or PWM at boot, which can fire the witch on reset), and A2, A3, A4 and D37 (input-only). The app rejects flash pins and input-only output pins.
+Avoid D14 and D15 (boot strapping or PWM at boot, which can fire the witch on reset), and A2, A3, A4 and D37 (input-only). The app rejects flash pins and input-only output pins. D12 is the exception: it is the eye pin by design (see Eyes below).
 
 ```powershell
 python -m pip install -e ".[dev,esp32]"
@@ -169,7 +176,7 @@ WITCH_ESP32_PORT=COM7
 Close any serial monitor first; only one program can hold the port. Opening the port resets the board, so start-up takes a couple of seconds. Bench test with the witch **disconnected**:
 
 ```powershell
-python -m witch --hw-test   # prints PIR level for 10 s, then pulses GPIO32 once
+python -m witch --hw-test   # prints PIR level for 10 s, ramps the eyes, then pulses GPIO32 once
 ```
 
 If the PIR misbehaves, `python -m witch --trigger keyboard --hardware esp32` lets Enter stand in for motion while still firing the real witch. To restart after a crash: `while ($true) { python -m witch; Start-Sleep 5 }`.
@@ -177,7 +184,23 @@ If the PIR misbehaves, `python -m witch --trigger keyboard --hardware esp32` let
 Troubleshooting:
 - `Could not open COM7`: another program holds the port, or the port number changed (see Device Manager).
 - `ESP32 ... is not responding` or `stopped answering`: the Feather is not running the firmware, or the cable was pulled. The app exits so a supervisor can restart it.
+- `ESP32 firmware speaks protocol N` or `is not responding (is the protocol v2 firmware flashed?)`: reflash `mcu-firmware/ESP32-USB-GPIO-ESPIDF` (`idf.py flash`).
+- `ESP32 deadman fired`: the board heard nothing from the app for 15 s and released its outputs; the app exits so a supervisor can restart it.
 - Bench-test the pulse on an LED or multimeter before connecting the witch.
+
+## Eyes
+
+The eyes are two LEDs on one pin (GPIO12 on the ESP32, active high), driven with PWM. The witch's own PCB drives the same LEDs, at up to about 2 V, to light them for the jump. So the app never drives the pin low: "off" is **high impedance** (an input with no pulls), and it stays high impedance for `WITCH_EYES_PCB_HOLDOFF_S` from the start of every activation pulse, so the two drivers never fight.
+
+- **Motion:** when the PIR goes high while she waits, the eyes flicker briefly and dimly (about 1.5 s at `WITCH_EYES_FLICKER_LEVEL`), at most once per `WITCH_EYES_FLICKER_COOLDOWN_S`.
+- **Speaking:** the eyes are on at `WITCH_EYES_SPEAK_LEVEL` from the first audio of any reply, opening line or ambient phrase until it ends. Speech that starts inside the PCB window waits for the window to end.
+- **Ceiling:** every level is a fraction of `WITCH_EYES_MAX_DUTY`, and nothing is ever driven above it. Levels are squared so mid levels look mid. Measure the pin with a meter while running `python -m witch --hw-test` and set the ceiling so the LEDs see what the witch's PCB gives them (about 2 V).
+- **Errors:** an eye error is logged once and the eyes switch themselves off for the rest of the run; it never ends a conversation.
+- **Raspberry Pi:** `gpiozero.PWMLED` on BCM12 (software PWM through `lgpio`). Going high impedance closes the device, which returns the pin to an input.
+
+GPIO12 is an ESP32 strapping pin (it selects the flash voltage if it is high at reset). The eye pin is high impedance at boot, so the LEDs to ground are safe, but check on the bench that nothing holds GPIO12 high while the board resets, for example the witch's PCB driving the LEDs while the Feather boots. Add a series resistor if the board ever fails to boot with the witch connected.
+
+`--hw-test` ramps the eyes to the ceiling, holds the speaking level, flickers, then releases the pin.
 
 ## Tests
 

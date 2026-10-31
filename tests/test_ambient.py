@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 
 import pytest
@@ -83,6 +84,43 @@ def test_a_cache_miss_synthesises_plays_and_caches_then_a_hit_makes_no_request(t
         await player.play_next()
         assert len(tts.requests) == 1
         assert sink.played[1] == b"".join(AUDIO)
+
+    asyncio.run(scenario())
+
+
+def test_ambient_audio_goes_through_the_eyes_on_both_paths(tmp_path):
+    class RecordingEyes:
+        def __init__(self) -> None:
+            self.chunks = 0
+            self.sessions = 0
+
+        @asynccontextmanager
+        async def track(self, chunks: AsyncIterator[bytes]) -> AsyncIterator[AsyncIterator[bytes]]:
+            self.sessions += 1
+
+            async def counted() -> AsyncIterator[bytes]:
+                async for chunk in chunks:
+                    self.chunks += 1
+                    yield chunk
+
+            yield counted()
+
+    async def scenario() -> None:
+        eyes = RecordingEyes()
+        tts, sink = FakeTTS(), FakeSink()
+        player = AmbientPlayer(
+            SETTINGS,
+            ShuffleBag(("[bored] Is it midnight yet?",)),
+            PhraseCache(tmp_path),
+            lambda _s: tts,
+            lambda _s: sink,
+            eyes=eyes,  # type: ignore[arg-type]
+        )
+        await player.play_next()  # synthesised
+        await player.play_next()  # cached
+        assert eyes.sessions == 2
+        assert eyes.chunks == len(AUDIO) + 1  # the cache replays the clip as one chunk
+        assert len(sink.played) == 2
 
     asyncio.run(scenario())
 

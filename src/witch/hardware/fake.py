@@ -8,7 +8,7 @@ import sys
 import threading
 from typing import Self
 
-from witch.hardware.base import ActivationOutput, EdgeLatch
+from witch.hardware.base import ActivationOutput, EdgeLatch, EyeLight
 
 log = logging.getLogger("witch.hardware")
 
@@ -66,3 +66,19 @@ class LoggingOutput(ActivationOutput):
 
     async def _close(self) -> None:
         log.info("%s: (simulated) output closed", self.name)
+
+
+class LoggingEyes(EyeLight):
+    """Logs eye changes instead of driving a pin."""
+
+    async def _open(self) -> None:
+        log.info("%s: (simulated) eyes ready", self.name)
+
+    async def _drive(self, duty: float) -> None:
+        log.debug("%s: eyes duty %.2f", self.name, duty)
+
+    async def _release(self) -> None:
+        log.debug("%s: eyes released (high impedance)", self.name)
+
+    async def _close(self) -> None:
+        log.info("%s: (simulated) eyes closed", self.name)

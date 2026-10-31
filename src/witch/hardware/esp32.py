@@ -1,72 +1,63 @@
-"""ESP32 Feather backend: the PIR sensor and witch output over USB serial.
+"""ESP32 Feather backend: the PIR sensor, witch output and eyes over USB serial.
 
-The firmware (mcu-firmware/ESP32-USB-GPIO-ESPIDF) is driven through the `esp32-usb-gpio` library, which
-blocks on every command and gives up on nothing, so every call here runs on one worker thread under a
-timeout. The firmware emits no usable edge events, so the sensor polls the port state it streams.
+The firmware (mcu-firmware/ESP32-USB-GPIO-ESPIDF) speaks a line protocol that `Esp32Client` implements. The
+firmware emits no usable edge events, so the sensor polls the port state it streams.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Self
+from typing import Self
 
-from witch.hardware.base import ActivationOutput, EdgeLatch, HardwareError
+from witch.hardware.base import ActivationOutput, EdgeLatch, EyeLight, HardwareError
+from witch.hardware.esp32_client import (
+    Esp32Client,
+    LinkLost,
+    SerialFactory,
+    default_serial_factory,
+)
 
 log = logging.getLogger("witch.hardware")
 
-# Values of the library's GPIOPinMode and pull enums; the library formats them straight into commands.
+# Values of the firmware's gpio_mode_t.
 _MODE_INPUT = 1
 _MODE_OUTPUT = 2
 _ENABLE = 1
 
-BOOT_WAIT_S = 2.0
+BOOT_WAIT_S = 3.0
 CALL_TIMEOUT_S = 2.0
 KEEPALIVE_S = 5.0
+# The board releases every output if it hears nothing for this long, for example if the host dies.
+DEADMAN_MS = 15000
 POLL_S = 0.02
 DEBOUNCE_SAMPLES = 2
 STILL_POLL_S = 0.05
 STRAPPING_PINS = (0, 2, 12, 15)
-
-GpioFactory = Callable[[str], Any]
-
-
-def _default_factory(port: str) -> Any:
-    try:
-        from esp32_usb_gpio import ESP32USBGPIO
-    except ImportError as exc:
-        raise HardwareError(
-            "esp32-usb-gpio is not installed; run: pip install -e '.[esp32]' (see README)"
-        ) from exc
-    return ESP32USBGPIO(port)
+PWM_FULL_SCALE = 1023
 
 
 class Esp32Link:
-    """One serial connection shared by the sensor and the output; opened by the first user, closed by the last."""
+    """One serial connection shared by the sensor, output and eyes; opened by the first user, closed by the last."""
 
     def __init__(
         self,
         port: str,
-        probe_pin: int,
         *,
-        gpio_factory: GpioFactory = _default_factory,
+        serial_factory: SerialFactory = default_serial_factory,
         boot_wait_s: float = BOOT_WAIT_S,
         call_timeout_s: float = CALL_TIMEOUT_S,
         keepalive_s: float = KEEPALIVE_S,
+        deadman_ms: int = DEADMAN_MS,
     ) -> None:
         self._port = port
-        self._probe_pin = probe_pin
-        self._factory = gpio_factory
+        self._serial_factory = serial_factory
         self._boot_wait_s = boot_wait_s
         self._call_timeout_s = call_timeout_s
         self._keepalive_s = keepalive_s
+        self._deadman_ms = deadman_ms
         self._users = 0
-        self._gpio: Any = None
-        self._executor: ThreadPoolExecutor | None = None
-        self._lock: asyncio.Lock | None = None
+        self._client: Esp32Client | None = None
         self._failed: asyncio.Event | None = None
         self._error: HardwareError | None = None
         self._keepalive_task: asyncio.Task[None] | None = None
@@ -84,10 +75,8 @@ class Esp32Link:
         await self._failed.wait()
 
     def port_state(self) -> int:
-        """Bitmask of the streamed pin levels (initialised pins only); no serial round trip."""
-        if self._gpio is None:
-            return 0
-        return int(self._gpio.portState()[1])
+        """Bitmask of the streamed pin levels (configured pins only); no serial round trip."""
+        return 0 if self._client is None else self._client.port_state
 
     async def acquire(self) -> None:
         if self._users == 0:
@@ -99,33 +88,18 @@ class Esp32Link:
         if self._users == 0:
             await self._close()
 
-    async def call(self, method: str, *args: int, force: bool = False) -> Any:
-        """Run one library command. `force` still tries after a failure, for driving outputs low."""
+    async def call(self, command: str, *args: int, force: bool = False) -> str | None:
+        """Run one firmware command. `force` still tries after a failure, for driving outputs low."""
         if not force:
             self.raise_if_failed()
-        if self._gpio is None:
+        if self._client is None:
             raise HardwareError("ESP32 link is not open")
         try:
-            return await self._invoke(method, *args)
+            return await self._client.request(command, *args)
         except TimeoutError:
-            raise self._fail(f"ESP32 on {self._port} did not answer {method}{args}") from None
-        except OSError as exc:
+            raise self._fail(f"ESP32 on {self._port} did not answer {command}{args}") from None
+        except LinkLost as exc:
             raise self._fail(f"ESP32 on {self._port} lost: {exc}") from exc
-        except Exception as exc:
-            raise HardwareError(f"ESP32 {method}{args} failed: {exc}") from exc
-
-    async def _invoke(self, method: str, *args: int) -> Any:
-        assert self._lock is not None and self._executor is not None
-        gpio = self._gpio
-        loop = asyncio.get_running_loop()
-        async with self._lock:
-            future = loop.run_in_executor(self._executor, getattr(gpio, method), *args)
-            try:
-                return await asyncio.wait_for(future, self._call_timeout_s)
-            except TimeoutError:
-                # The library spins on this flag; setting it frees the worker thread.
-                gpio.responseRecv = True
-                raise
 
     def _fail(self, message: str) -> HardwareError:
         if self._error is None:
@@ -136,81 +110,42 @@ class Esp32Link:
         return self._error
 
     async def _open(self) -> None:
-        self._lock = asyncio.Lock()
         self._failed = asyncio.Event()
         self._error = None
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="esp32")
-        loop = asyncio.get_running_loop()
+        client = Esp32Client(
+            self._port,
+            self._fail,
+            serial_factory=self._serial_factory,
+            boot_wait_s=self._boot_wait_s,
+            call_timeout_s=self._call_timeout_s,
+        )
+        await client.open()
+        self._client = client
         try:
-            self._gpio = await loop.run_in_executor(self._executor, self._factory, self._port)
-        except HardwareError:
-            self._shutdown_executor()
-            raise
-        except Exception as exc:
-            self._shutdown_executor()
-            raise HardwareError(
-                f"Could not open {self._port}: {exc} (close any serial monitor using it)"
-            ) from exc
-        try:
-            # Opening the port resets the ESP32, so give it time to boot before talking to it.
-            await asyncio.sleep(self._boot_wait_s)
-            await self._handshake()
+            await self.call("DEADMAN", self._deadman_ms)
         except BaseException:
             await self._close()
             raise
         self._keepalive_task = asyncio.create_task(self._keepalive(), name="esp32-keepalive")
         log.info("ESP32 connected on %s", self._port)
 
-    async def _handshake(self) -> None:
-        """Configure the probe pin low; if the board stays silent, hard-reset it and retry once."""
-        for attempt in (1, 2):
-            try:
-                await self._invoke("setup", self._probe_pin, _MODE_OUTPUT)
-                await self._invoke("reset", self._probe_pin)
-                return
-            except TimeoutError:
-                if attempt == 2:
-                    raise HardwareError(f"ESP32 on {self._port} is not responding") from None
-                log.warning("ESP32 did not answer; resetting it and retrying")
-                with contextlib.suppress(Exception):
-                    await self._invoke("hardReset")
-                await asyncio.sleep(self._boot_wait_s)
-            except OSError as exc:
-                raise HardwareError(f"ESP32 on {self._port} lost: {exc}") from exc
-            except Exception as exc:
-                raise HardwareError(f"ESP32 handshake failed: {exc}") from exc
-
     async def _keepalive(self) -> None:
-        # The library swallows serial errors, so a pulled cable would otherwise freeze the cached state.
+        # Feeds the firmware's deadman and notices a board that has stopped answering.
         while True:
             await asyncio.sleep(self._keepalive_s)
             try:
-                await self._invoke("pinState", self._probe_pin)
-            except TimeoutError:
-                self._fail(f"ESP32 on {self._port} stopped answering")
+                await self.call("PING")
+            except HardwareError:
                 return
-            except OSError as exc:
-                self._fail(f"ESP32 on {self._port} lost: {exc}")
-                return
-            except Exception:
-                # An error reply still proves the board is alive.
-                pass
 
     async def _close(self) -> None:
         task, self._keepalive_task = self._keepalive_task, None
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        gpio, self._gpio = self._gpio, None
-        if gpio is not None:
-            with contextlib.suppress(Exception):
-                gpio.close()
-        self._shutdown_executor()
-
-    def _shutdown_executor(self) -> None:
-        if self._executor is not None:
-            self._executor.shutdown(wait=False)
-            self._executor = None
+        client, self._client = self._client, None
+        if client is not None:
+            await client.close()
 
 
 class Esp32MotionSensor:
@@ -241,9 +176,9 @@ class Esp32MotionSensor:
         self._acquired = True
         try:
             if self._power_pin is not None:
-                await self._link.call("setup", self._power_pin, _MODE_OUTPUT)
-                await self._link.call("set", self._power_pin)
-            await self._link.call("setup", self._pin, _MODE_INPUT, 0, _ENABLE)
+                await self._link.call("INIT", self._power_pin, _MODE_OUTPUT)
+                await self._link.call("SET", self._power_pin)
+            await self._link.call("INIT", self._pin, _MODE_INPUT, 0, _ENABLE)
         except BaseException:
             await self._shutdown()
             raise
@@ -264,7 +199,7 @@ class Esp32MotionSensor:
         try:
             if self._power_pin is not None:
                 try:
-                    await self._link.call("reset", self._power_pin, force=True)
+                    await self._link.call("RESET", self._power_pin, force=True)
                 except HardwareError as exc:
                     log.warning("Could not switch the PIR power off: %s", exc)
         finally:
@@ -319,8 +254,8 @@ class Esp32Output(ActivationOutput):
         await self._link.acquire()
         self._acquired = True
         try:
-            await self._link.call("setup", self._pin, _MODE_OUTPUT)
-            await self._link.call("reset", self._pin)
+            await self._link.call("INIT", self._pin, _MODE_OUTPUT)
+            await self._link.call("RESET", self._pin)
         except BaseException:
             self._acquired = False
             await self._link.release()
@@ -328,14 +263,47 @@ class Esp32Output(ActivationOutput):
 
     async def _set(self, high: bool) -> None:
         if high:
-            await self._link.call("set", self._pin)
+            await self._link.call("SET", self._pin)
             return
         # Leaving the witch driven is the worst failure, so a low gets a second try even on a failed link.
         try:
-            await self._link.call("reset", self._pin, force=True)
+            await self._link.call("RESET", self._pin, force=True)
         except HardwareError:
             log.warning("%s: could not drive the output low; retrying", self.name)
-            await self._link.call("reset", self._pin, force=True)
+            await self._link.call("RESET", self._pin, force=True)
+
+    async def _close(self) -> None:
+        if not self._acquired:
+            return
+        self._acquired = False
+        await self._link.release()
+
+
+class Esp32Eyes(EyeLight):
+    """The eye LEDs on an ESP32 pin, driven by hardware PWM and released to high impedance when idle."""
+
+    def __init__(self, name: str, link: Esp32Link, pin: int, max_duty: float) -> None:
+        super().__init__(name, max_duty)
+        self._link = link
+        self._pin = pin
+        self._acquired = False
+
+    async def _open(self) -> None:
+        await self._link.acquire()
+        self._acquired = True
+        try:
+            await self._link.call("HIZ", self._pin)
+        except BaseException:
+            self._acquired = False
+            await self._link.release()
+            raise
+
+    async def _drive(self, duty: float) -> None:
+        await self._link.call("PWM", self._pin, round(duty * PWM_FULL_SCALE))
+
+    async def _release(self) -> None:
+        # Driving against the witch's PCB is the failure to avoid, so a release is attempted even on a failed link.
+        await self._link.call("HIZ", self._pin, force=True)
 
     async def _close(self) -> None:
         if not self._acquired:

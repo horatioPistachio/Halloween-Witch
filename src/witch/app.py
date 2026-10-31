@@ -20,6 +20,7 @@ from witch.audio.speaker import SpeakerSink
 from witch.config import Settings
 from witch.control import EndReason, IdleTimer, RunController
 from witch.cost import CostTracker, InteractionCost, format_interaction
+from witch.eyes import Eyes, NullEyes, build_eyes
 from witch.gate import MicGate
 from witch.hardware import build_hardware
 from witch.opening import OpeningPicker
@@ -81,11 +82,16 @@ class Conversation:
     """
 
     def __init__(
-        self, settings: Settings, tracker: CostTracker, openings: OpeningPicker | None = None
+        self,
+        settings: Settings,
+        tracker: CostTracker,
+        openings: OpeningPicker | None = None,
+        eyes: Eyes | None = None,
     ) -> None:
         self._settings = settings
         self._tracker = tracker
         self._openings = openings
+        self._eyes: Eyes = eyes if eyes is not None else NullEyes()
         self._gate = MicGate()
         # True while the gate is closed for the opening cue rather than for a reply.
         self._opening_gate = False
@@ -276,7 +282,7 @@ class Conversation:
         while True:
             job = await self._queue.get()
             try:
-                spoken = await _speak(tts, sink, job.text)
+                spoken = await _speak(tts, sink, job.text, self._eyes)
                 _print_speech(job, spoken)
             except TTSError as exc:
                 log.error("TTS failed: %s", exc)
@@ -307,15 +313,17 @@ async def run(settings: Settings) -> int:
 async def run_controlled(settings: Settings) -> int:
     """PIR/keyboard mode: one conversation per activation, governed by RunController."""
     tracker = CostTracker(settings.model, settings.usage_log)
-    sensor, output = build_hardware(settings)
+    sensor, output, light = build_hardware(settings)
+    eyes = build_eyes(settings, light)
     openings = OpeningPicker() if settings.opening else None
     controller = RunController(
         settings,
         sensor,
         output,
-        lambda: Conversation(settings, tracker, openings),
+        lambda: Conversation(settings, tracker, openings, eyes),
         FATAL_ERRORS,
-        ambient=build_ambient(settings),
+        ambient=build_ambient(settings, eyes=eyes),
+        eyes=eyes,
     )
     try:
         await controller.run()
@@ -364,7 +372,7 @@ def _speech_text(parsed: tags.WitchResponse | None, settings: Settings) -> str:
     return tags.speech_text(parsed, keep_tags=settings.tts_keep_tags)
 
 
-async def _speak(tts: TextToSpeech, sink: AudioSink, text: str) -> _Spoken:
+async def _speak(tts: TextToSpeech, sink: AudioSink, text: str, eyes: Eyes | None = None) -> _Spoken:
     loop = asyncio.get_running_loop()
     started_at = loop.time()
     first_audio_at: float | None = None
@@ -378,7 +386,8 @@ async def _speak(tts: TextToSpeech, sink: AudioSink, text: str) -> _Spoken:
                 first_audio_at = loop.time()
             yield chunk
 
-    await sink.play(audio())
+    async with (eyes if eyes is not None else NullEyes()).track(audio()) as chunks:
+        await sink.play(chunks)
     return _Spoken(
         started_at=started_at,
         first_audio_at=first_audio_at,

@@ -119,6 +119,8 @@ Update `tests/test_config.py` / `tests/test_run_control.py`: new settings, esp32
 
 ## Known quirks (deferred, not fixed tonight)
 
+> **Resolved** by the eyes work ([design-document-witch-flashing-eyes.prompt.md](design-document-witch-flashing-eyes.prompt.md)): firmware protocol v2 (sequence numbers and acks, NULL-safe line parser, host deadman, no ISR, `PORT` only on change) and an in-repo serial client replacing `esp32-usb-gpio`. The list below is kept as history.
+
 Firmware (`mcu-firmware/ESP32-USB-GPIO-ESPIDF`):
 - Malformed or truncated commands can crash it: `strtok` results are not NULL-checked.
 - A command split across two UART reads is parsed as two bad commands. The 1 ms read timeout makes this possible.

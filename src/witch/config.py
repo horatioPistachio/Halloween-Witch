@@ -45,6 +45,13 @@ DEFAULT_ESP32_ACTIVATE_PIN = 32
 MAX_ESP32_PIN = 39
 ESP32_FLASH_PINS = range(6, 12)
 ESP32_INPUT_ONLY_PINS = range(34, 40)
+# GPIO12 on the ESP32 Feather (D12) and BCM12 on the Pi: both are output capable.
+DEFAULT_EYES_PIN = 12
+DEFAULT_EYES_MAX_DUTY = 60.0
+DEFAULT_EYES_SPEAK_LEVEL = 0.6
+DEFAULT_EYES_FLICKER_LEVEL = 0.15
+DEFAULT_EYES_FLICKER_COOLDOWN_S = 5.0
+DEFAULT_EYES_PCB_HOLDOFF_S = 15.0
 DEFAULT_PIR_WARMUP_S = 60.0
 DEFAULT_ACTIVATE_MS = 1000
 DEFAULT_IDLE_TIMEOUT_S = 30.0
@@ -91,6 +98,14 @@ class Settings:
     pir_pin: int = DEFAULT_PIR_PIN
     pir_power_pin: int | None = DEFAULT_PIR_POWER_PIN
     activate_pin: int = DEFAULT_ACTIVATE_PIN
+    eyes: bool = True
+    eyes_pin: int = DEFAULT_EYES_PIN
+    # Hardware ceiling as a percentage of full PWM duty; the levels below are fractions of it.
+    eyes_max_duty: float = DEFAULT_EYES_MAX_DUTY
+    eyes_speak_level: float = DEFAULT_EYES_SPEAK_LEVEL
+    eyes_flicker_level: float = DEFAULT_EYES_FLICKER_LEVEL
+    eyes_flicker_cooldown_s: float = DEFAULT_EYES_FLICKER_COOLDOWN_S
+    eyes_pcb_holdoff_s: float = DEFAULT_EYES_PCB_HOLDOFF_S
     pir_warmup_s: float = DEFAULT_PIR_WARMUP_S
     activate_ms: int = DEFAULT_ACTIVATE_MS
     idle_timeout_s: float = DEFAULT_IDLE_TIMEOUT_S
@@ -132,6 +147,7 @@ def load_settings(
     trigger: str | None = None,
     hardware: str | None = None,
     opening: bool | None = None,
+    eyes: bool | None = None,
     require_openai: bool = True,
     environ: Mapping[str, str] | None = None,
     dotenv_path: Path | None = None,
@@ -189,6 +205,8 @@ def load_settings(
     run_control = _parse_run_control(environ, trigger_name, hardware_name) if trigger_name != "none" else {}
     if opening is not None:
         run_control["opening"] = opening
+    if eyes is not None:
+        run_control["eyes"] = eyes
 
     return Settings(
         trigger=trigger_name,
@@ -236,6 +254,23 @@ def _parse_run_control(environ: Mapping[str, str], trigger: str, hardware: str) 
             DEFAULT_ESP32_ACTIVATE_PIN if esp32 else DEFAULT_ACTIVATE_PIN,
             maximum=max_pin,
         ),
+        "eyes": _parse_switch(environ, "WITCH_EYES", default=True),
+        "eyes_pin": _parse_pin(environ, "WITCH_EYES_PIN", DEFAULT_EYES_PIN, maximum=max_pin),
+        "eyes_max_duty": _parse_ranged_float(
+            environ, "WITCH_EYES_MAX_DUTY", DEFAULT_EYES_MAX_DUTY, low=0.0, high=100.0
+        ),
+        "eyes_speak_level": _parse_ranged_float(
+            environ, "WITCH_EYES_SPEAK_LEVEL", DEFAULT_EYES_SPEAK_LEVEL, low=0.0, high=1.0
+        ),
+        "eyes_flicker_level": _parse_ranged_float(
+            environ, "WITCH_EYES_FLICKER_LEVEL", DEFAULT_EYES_FLICKER_LEVEL, low=0.0, high=1.0
+        ),
+        "eyes_flicker_cooldown_s": _parse_float(
+            environ, "WITCH_EYES_FLICKER_COOLDOWN_S", DEFAULT_EYES_FLICKER_COOLDOWN_S, minimum=0.0
+        ),
+        "eyes_pcb_holdoff_s": _parse_float(
+            environ, "WITCH_EYES_PCB_HOLDOFF_S", DEFAULT_EYES_PCB_HOLDOFF_S, minimum=0.0
+        ),
         "pir_warmup_s": _parse_float(environ, "WITCH_PIR_WARMUP_S", DEFAULT_PIR_WARMUP_S, minimum=0.0),
         "activate_ms": _parse_int(environ, "WITCH_ACTIVATE_MS", DEFAULT_ACTIVATE_MS),
         "idle_timeout_s": _parse_float(
@@ -272,9 +307,15 @@ def _parse_run_control(environ: Mapping[str, str], trigger: str, hardware: str) 
     if trigger == "pir":
         # Only the PIR path drives the sensor pins; the keyboard trigger only needs the activate pin.
         pins = [values["pir_pin"], values["pir_power_pin"], values["activate_pin"]]
+        if values["eyes"]:
+            pins.append(values["eyes_pin"])
         used = [pin for pin in pins if pin is not None]
         if len(set(used)) != len(used):
-            raise ConfigError("WITCH_PIR_PIN, WITCH_PIR_POWER_PIN and WITCH_ACTIVATE_PIN must be different")
+            raise ConfigError(
+                "WITCH_PIR_PIN, WITCH_PIR_POWER_PIN, WITCH_ACTIVATE_PIN and WITCH_EYES_PIN must be different"
+            )
+    elif values["eyes"] and values["eyes_pin"] == values["activate_pin"]:
+        raise ConfigError("WITCH_ACTIVATE_PIN and WITCH_EYES_PIN must be different")
     return values
 
 
@@ -286,10 +327,15 @@ def _parse_cache_dir(environ: Mapping[str, str]) -> Path | None:
 
 
 def _check_esp32_pins(values: dict[str, object]) -> None:
-    names = {"pir_pin": "WITCH_PIR_PIN", "pir_power_pin": "WITCH_PIR_POWER_PIN", "activate_pin": "WITCH_ACTIVATE_PIN"}
+    names = {
+        "pir_pin": "WITCH_PIR_PIN",
+        "pir_power_pin": "WITCH_PIR_POWER_PIN",
+        "activate_pin": "WITCH_ACTIVATE_PIN",
+        "eyes_pin": "WITCH_EYES_PIN",
+    }
     for key, name in names.items():
         pin = values[key]
-        if pin is None:
+        if pin is None or (key == "eyes_pin" and not values["eyes"]):
             continue
         if pin in ESP32_FLASH_PINS:
             raise ConfigError(f"{name}: GPIO{pin} is connected to the ESP32's flash and cannot be used")
@@ -328,6 +374,16 @@ def _parse_float(
     if value < minimum or (strict and value == minimum):
         bound = "greater than" if strict else "at least"
         raise ConfigError(f"{name} must be {bound} {minimum:g}")
+    return value
+
+
+def _parse_ranged_float(
+    environ: Mapping[str, str], name: str, default: float, *, low: float, high: float
+) -> float:
+    """A number in (low, high]."""
+    value = _parse_float(environ, name, default, minimum=low, strict=True)
+    if value > high:
+        raise ConfigError(f"{name} must be at most {high:g}")
     return value
 
 

@@ -1,4 +1,4 @@
-"""Hardware seams for the PIR motion sensor and the witch's activation output."""
+"""Hardware seams for the PIR motion sensor, the witch's activation output and her eyes."""
 
 from __future__ import annotations
 
@@ -92,6 +92,54 @@ class ActivationOutput(ABC):
 
     @abstractmethod
     async def _set(self, high: bool) -> None: ...
+
+    @abstractmethod
+    async def _close(self) -> None: ...
+
+
+class EyeLight(ABC):
+    """The witch's eyes: LEDs shared with the witch's own PCB, so "off" is high impedance, never low.
+
+    `set` takes a brightness level from 0 to 1 and never drives harder than the ceiling `max_duty`.
+    """
+
+    def __init__(self, name: str, max_duty: float) -> None:
+        self.name = name
+        self._max_duty = max(0.0, min(max_duty, 1.0))
+
+    async def __aenter__(self) -> EyeLight:
+        await self._open()
+        try:
+            await self._release()
+        except BaseException:
+            await self._close()
+            raise
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        try:
+            await self._release()
+        finally:
+            await self._close()
+
+    async def set(self, level: float) -> None:
+        # Squared so that mid levels look mid to the eye.
+        duty = max(0.0, min(level, 1.0)) ** 2 * self._max_duty
+        await self._drive(duty)
+
+    async def release(self) -> None:
+        """Stop driving the pin (high impedance) so the witch's PCB can drive the eyes."""
+        await self._release()
+
+    @abstractmethod
+    async def _open(self) -> None: ...
+
+    @abstractmethod
+    async def _drive(self, duty: float) -> None:
+        """Drive the pin with PWM; `duty` is a fraction of full scale, already capped."""
+
+    @abstractmethod
+    async def _release(self) -> None: ...
 
     @abstractmethod
     async def _close(self) -> None: ...

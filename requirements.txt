@@ -4,5 +4,5 @@ numpy>=1.26
 python-dotenv>=1.0
 httpx>=0.27
 elevenlabs>=2.0
-esp32-usb-gpio>=0.1.6
+pyserial>=3.5
 pytest>=8.0
