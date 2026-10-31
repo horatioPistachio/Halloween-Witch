@@ -88,6 +88,13 @@ def speech_text(response: WitchResponse, *, keep_tags: bool) -> str:
     return _truncate(text.strip())
 
 
+def trusted_speech_text(raw: str, *, keep_tags: bool) -> str:
+    """Speech text for operator-written phrases: any [tag] is kept as is (no whitelist) or stripped."""
+    text = raw if keep_tags else _TAG_RE.sub("", raw)
+    text = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", _normalise_spaces(text))
+    return _truncate(text)
+
+
 def _truncate(text: str) -> str:
     if len(text) <= MAX_TTS_CHARS:
         return text

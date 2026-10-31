@@ -8,15 +8,24 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import random
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from enum import Enum
-from typing import Protocol, Self
+from typing import TYPE_CHECKING, Protocol, Self
 
-from witch.config import Settings
+from witch.config import AMBIENT_JITTER, AMBIENT_RESET_FRACTION, Settings
 from witch.hardware.base import ActivationOutput, MotionSensor
+from witch.presence import PresenceTracker
+
+if TYPE_CHECKING:
+    from witch.ambient import AmbientSound
 
 log = logging.getLogger("witch.control")
+
+TICK_S = 0.1
+# A long stall (for example a slow ambient sound) must not become one huge presence sample.
+MAX_DT_S = 1.0
 
 
 class EndReason(Enum):
@@ -94,25 +103,81 @@ class RunController:
         output: ActivationOutput,
         conversation_factory: ConversationFactory,
         fatal_errors: tuple[type[BaseException], ...],
+        ambient: AmbientSound | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        rng: random.Random | None = None,
     ) -> None:
         self._settings = settings
         self._sensor = sensor
         self._output = output
         self._new_conversation = conversation_factory
         self._fatal = fatal_errors
+        self._ambient = ambient
+        self._clock = clock
+        self._sleep = sleep
+        self._rng = rng if rng is not None else random.Random()
 
     async def run(self) -> None:
         async with self._output, self._sensor:
             await self._warm_up()
             while True:
-                log.info("state> WAITING for motion")
-                await self._sensor.wait_for_motion()
+                await self._await_presence()
                 await self._activate()
                 log.info("state> COOLDOWN %.0f s", self._settings.cooldown_s)
                 await asyncio.sleep(self._settings.cooldown_s)
-                log.info("state> REARM: waiting for PIR to go low, then high")
+                log.info("state> REARM: waiting for PIR to go low")
                 await self._sensor.wait_for_still()
-                # Anything that happened before this call is discarded by wait_for_motion.
+
+    async def _await_presence(self) -> None:
+        """Wait until enough presence has built up (or the operator forces it), playing ambient sounds meanwhile."""
+        s = self._settings
+        tracker = PresenceTracker(s.presence_threshold_s, s.presence_decay, self._rng)
+        log.info("state> WAITING for presence (threshold %.1f s)", tracker.threshold)
+        self._sensor.take_manual_trigger()  # presses from earlier phases are discarded
+        idle = self._new_inactivity_timer()
+        last = self._clock()
+        was_active = False
+        while True:
+            await self._sleep(TICK_S)
+            now = self._clock()
+            dt, last = min(now - last, MAX_DT_S), now
+            if self._sensor.take_manual_trigger():
+                log.info("presence> manual trigger")
+                return
+            active = self._sensor.is_active
+            reached = tracker.update(active, dt)
+            if active != was_active:
+                was_active = active
+                log.info(
+                    "presence> PIR %s, confidence %.1f / %.1f s",
+                    "high" if active else "low",
+                    tracker.confidence,
+                    tracker.threshold,
+                )
+            if reached:
+                log.info(
+                    "presence> confidence %.1f s reached threshold %.1f s",
+                    tracker.confidence,
+                    tracker.threshold,
+                )
+                return
+            if self._ambient is None or idle is None:
+                continue
+            if tracker.progress >= AMBIENT_RESET_FRACTION:
+                idle.touch()
+            if idle.expired():
+                # The PIR is not sampled while she speaks, and the sound's own duration is not counted.
+                await self._ambient.play_next()
+                idle = self._new_inactivity_timer()
+                last = self._clock()
+
+    def _new_inactivity_timer(self) -> IdleTimer | None:
+        if self._ambient is None:
+            return None
+        timer = IdleTimer(self._settings.ambient_interval_s * self._rng.uniform(*AMBIENT_JITTER), self._clock)
+        timer.start()
+        return timer
 
     async def _warm_up(self) -> None:
         if self._settings.pir_warmup_s <= 0:

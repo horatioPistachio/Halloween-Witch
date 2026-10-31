@@ -13,6 +13,7 @@ import openai
 from websockets.exceptions import WebSocketException
 
 from witch import tags
+from witch.ambient import build_ambient
 from witch.audio.base import AudioSink, AudioSource, PlaybackError
 from witch.audio.mic import MicSource
 from witch.audio.speaker import SpeakerSink
@@ -309,7 +310,12 @@ async def run_controlled(settings: Settings) -> int:
     sensor, output = build_hardware(settings)
     openings = OpeningPicker() if settings.opening else None
     controller = RunController(
-        settings, sensor, output, lambda: Conversation(settings, tracker, openings), FATAL_ERRORS
+        settings,
+        sensor,
+        output,
+        lambda: Conversation(settings, tracker, openings),
+        FATAL_ERRORS,
+        ambient=build_ambient(settings),
     )
     try:
         await controller.run()

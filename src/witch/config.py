@@ -53,6 +53,14 @@ DEFAULT_COOLDOWN_S = 30.0
 DEFAULT_SETUP_TIMEOUT_S = 20.0
 DEFAULT_OPENING_DELAY_MS = 0
 MAX_OPENING_DELAY_MS = 60000
+DEFAULT_PRESENCE_THRESHOLD_S = 10.0
+DEFAULT_PRESENCE_DECAY = 0.5
+DEFAULT_AMBIENT_INTERVAL_S = 300.0
+DEFAULT_PHRASE_CACHE_DIR = REPO_ROOT / ".cache" / "phrases"
+PRESENCE_JITTER = (0.5, 1.5)
+AMBIENT_JITTER = (0.5, 1.5)
+# Confidence (as a fraction of the threshold) that counts as real activity for the ambient timer.
+AMBIENT_RESET_FRACTION = 0.5
 
 
 class ConfigError(RuntimeError):
@@ -91,7 +99,10 @@ class Settings:
     setup_timeout_s: float = DEFAULT_SETUP_TIMEOUT_S
     opening: bool = True
     opening_delay_ms: int = DEFAULT_OPENING_DELAY_MS
-
+    presence_threshold_s: float = DEFAULT_PRESENCE_THRESHOLD_S
+    presence_decay: float = DEFAULT_PRESENCE_DECAY
+    ambient_interval_s: float = DEFAULT_AMBIENT_INTERVAL_S
+    phrase_cache_dir: Path | None = DEFAULT_PHRASE_CACHE_DIR
     @property
     def tts_keep_tags(self) -> bool:
         return tts_supports_tags(self.tts_model)
@@ -245,6 +256,14 @@ def _parse_run_control(environ: Mapping[str, str], trigger: str, hardware: str) 
             minimum=0,
             maximum=MAX_OPENING_DELAY_MS,
         ),
+        "presence_threshold_s": _parse_float(
+            environ, "WITCH_PRESENCE_THRESHOLD_S", DEFAULT_PRESENCE_THRESHOLD_S, minimum=0.0
+        ),
+        "presence_decay": _parse_float(environ, "WITCH_PRESENCE_DECAY", DEFAULT_PRESENCE_DECAY, minimum=0.0),
+        "ambient_interval_s": _parse_float(
+            environ, "WITCH_AMBIENT_INTERVAL_S", DEFAULT_AMBIENT_INTERVAL_S, minimum=0.0
+        ),
+        "phrase_cache_dir": _parse_cache_dir(environ),
     }
     if values["max_conversation_s"] < values["idle_timeout_s"]:  # type: ignore[operator]
         raise ConfigError("WITCH_MAX_CONVERSATION_S must be at least WITCH_IDLE_TIMEOUT_S")
@@ -257,6 +276,13 @@ def _parse_run_control(environ: Mapping[str, str], trigger: str, hardware: str) 
         if len(set(used)) != len(used):
             raise ConfigError("WITCH_PIR_PIN, WITCH_PIR_POWER_PIN and WITCH_ACTIVATE_PIN must be different")
     return values
+
+
+def _parse_cache_dir(environ: Mapping[str, str]) -> Path | None:
+    if "WITCH_PHRASE_CACHE_DIR" not in environ:
+        return DEFAULT_PHRASE_CACHE_DIR
+    raw = environ["WITCH_PHRASE_CACHE_DIR"].strip()
+    return Path(raw) if raw else None
 
 
 def _check_esp32_pins(values: dict[str, object]) -> None:

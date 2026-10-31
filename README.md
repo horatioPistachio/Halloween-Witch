@@ -55,7 +55,7 @@ Stop with Ctrl+C. Each reply prints its cost and the run total. Every interactio
 | `WITCH_MAX_OUTPUT_TOKENS` | `600` | Per-reply cap on output tokens |
 | `WITCH_USAGE_LOG` | `usage.jsonl` | Per-interaction cost log |
 | `WITCH_LOG_LEVEL` | `INFO` | Logging level |
-| `WITCH_TRIGGER` | `none` | `none` (always listening), `pir` (motion sensor), or `keyboard` (Enter = motion, for laptop tests) |
+| `WITCH_TRIGGER` | `none` | `none` (always listening), `pir` (motion sensor), or `keyboard` (Enter = instant activation, for laptop tests) |
 | `WITCH_HARDWARE` | `gpio` | `gpio` (Raspberry Pi pins) or `esp32` (ESP32 Feather over USB serial, see below). Also `--hardware` |
 | `WITCH_ESP32_PORT` | required for `esp32` | Serial port of the Feather, for example `COM7` |
 | `WITCH_PIR_PIN` | `27` | PIR signal pin (BCM on `gpio`, ESP32 GPIO on `esp32`; same for the next two) |
@@ -69,10 +69,24 @@ Stop with Ctrl+C. Each reply prints its cost and the run total. Every interactio
 | `WITCH_SETUP_TIMEOUT_S` | `20` | Maximum time to open the session, mic, speaker and TTS |
 | `WITCH_OPENING` | `on` | With `pir` or `keyboard`, the witch speaks first when a conversation starts. `off` (or `--no-opening`) makes her wait for the visitor |
 | `WITCH_OPENING_DELAY_MS` | `0` | Wait this long after activation before her opening line (0 to 5000), so she can speak once the jump lands |
+| `WITCH_PRESENCE_THRESHOLD_S` | `10` | Seconds of PIR-high needed before she activates. Each activation uses this x a random 0.5 to 1.5. `0` activates on the first blip |
+| `WITCH_PRESENCE_DECAY` | `0.5` | Confidence lost per second the PIR is low, so brief visits fade away. `0` never decays |
+| `WITCH_AMBIENT_INTERVAL_S` | `300` | Quiet time before she speaks on her own, x a random 0.5 to 1.5 each time. `0` turns it off |
+| `WITCH_PHRASE_CACHE_DIR` | `.cache/phrases` | Where her ambient phrases are stored once synthesised. Empty disables the cache |
 
 ## Raspberry Pi run control
 
-With `WITCH_TRIGGER=pir`, the app waits for motion, opens the conversation, pulses the witch, and ends the conversation on silence or the time cap. Then it cools down and re-arms only after the PIR goes low and high again.
+With `WITCH_TRIGGER=pir`, the app waits for presence, opens the conversation, pulses the witch, and ends the conversation on silence or the time cap. Then it cools down and re-arms once the PIR goes low.
+
+### Presence confidence
+
+She does not activate on the first PIR blip. While waiting, the app samples the PIR every 0.1 s: each second it is high adds a second of confidence, each second it is low removes `WITCH_PRESENCE_DECAY` of one. She activates when confidence reaches the threshold (`WITCH_PRESENCE_THRESHOLD_S` x a random 0.5 to 1.5, chosen afresh for each activation). Confidence starts from zero after every conversation. The log shows `presence>` lines as it changes. With `--trigger keyboard`, pressing Enter activates her at once.
+
+### Ambient sounds
+
+After `WITCH_AMBIENT_INTERVAL_S` (x 0.5 to 1.5) with no real activity she says one phrase by herself, which keeps a Bluetooth speaker awake and shows she is alive. Audio only: she does not jump. "Real activity" means confidence at 50% of the threshold or more, an Enter press, or an activation; small PIR blips do not reset the timer. The PIR is ignored while she speaks. She does nothing here with `--no-tts`, `WITCH_AMBIENT_INTERVAL_S=0`, or `WITCH_TRIGGER=none`.
+
+The phrases are the `PERIODIC_PHRASES` list in `src/witch/phrases.py`; to add one, add a string to it. Tags such as `[cackle]` are spoken as performance cues with the v3/v4 voice models and removed for others. Each phrase is drawn from a shuffled bag (all before any repeat). The first time a phrase plays it is synthesised by ElevenLabs and saved under `.cache/phrases`, so later plays are free, offline and sound identical. Changing the voice, model or stability makes new audio; delete the folder to start over.
 
 ### Opening line
 
@@ -120,6 +134,8 @@ Troubleshooting:
 - PIR retriggers constantly or never re-arms: shorten the module's hold time and check the 3.3 V level and GPIO27 wiring.
 - No audio under systemd: add the service user to the `audio` group and set `WITCH_INPUT_DEVICE` / `WITCH_OUTPUT_DEVICE`.
 - Witch speaks over the jump or before it lands: set `WITCH_OPENING_DELAY_MS` (for example `800`).
+- She triggers too easily: set the PIR's hold time to the minimum, then raise `WITCH_PRESENCE_THRESHOLD_S`. A PIR that stays high for several seconds after each blip counts as that much presence. If she never triggers in a busy room, lower the threshold or `WITCH_PRESENCE_DECAY`.
+- Ambient sound never plays: check TTS is on, `WITCH_AMBIENT_INTERVAL_S` is not `0`, and look for `ambient>` warnings in the log. The first syllable may be clipped if the Bluetooth speaker was asleep.
 - First opening after a quiet spell is slow but quick afterwards: the prompt cache was cold. This is expected.
 - `cached 0` on every activation: something changed the prefix. Check that `WITCH_PERSONA` and the prompt text are unchanged between runs.
 - Witch says "stage cue" aloud or describes the cue: tighten the rule in `_build_prompt` in `src/witch/persona.py`.

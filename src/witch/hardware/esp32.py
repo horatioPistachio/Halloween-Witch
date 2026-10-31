@@ -302,6 +302,9 @@ class Esp32MotionSensor:
             self._link.raise_if_failed()
             await asyncio.sleep(STILL_POLL_S)
 
+    def take_manual_trigger(self) -> bool:
+        return False
+
 
 class Esp32Output(ActivationOutput):
     """An ESP32 output that drives the witch's activation input."""

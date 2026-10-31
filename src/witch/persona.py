@@ -17,6 +17,11 @@ ALLOWED_TAGS: tuple[str, ...] = (
     "excited",
     "pause",
     "sinister",
+    "whispering",
+    "playful",
+    "angry",
+    "softly",
+    "singing",
 )
 
 def _build_prompt(identity: str, tone_rule: str, examples: str) -> str:

@@ -14,15 +14,17 @@ log = logging.getLogger("witch.hardware")
 
 
 class KeyboardSensor:
-    """Treats each line typed on stdin as one motion event."""
+    """Treats each line typed on stdin as one operator-forced activation."""
 
     def __init__(self) -> None:
         self._latch = EdgeLatch()
+        self._presses = 0
+        self._lock = threading.Lock()
 
     async def __aenter__(self) -> Self:
         self._latch.bind(asyncio.get_running_loop())
         threading.Thread(target=self._read_stdin, name="keyboard-sensor", daemon=True).start()
-        log.info("Keyboard sensor: press Enter to simulate motion")
+        log.info("Keyboard sensor: press Enter to activate the witch")
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
@@ -33,11 +35,18 @@ class KeyboardSensor:
             line = sys.stdin.readline()
             if not line:
                 return
+            with self._lock:
+                self._presses += 1
             self._latch.signal()
 
     @property
     def is_active(self) -> bool:
         return False
+
+    def take_manual_trigger(self) -> bool:
+        with self._lock:
+            pressed, self._presses = self._presses > 0, 0
+        return pressed
 
     async def wait_for_motion(self) -> None:
         await self._latch.wait_fresh()

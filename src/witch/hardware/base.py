@@ -25,6 +25,9 @@ class MotionSensor(Protocol):
     async def wait_for_still(self) -> None:
         """Return once the sensor level is low (immediately if it already is)."""
 
+    def take_manual_trigger(self) -> bool:
+        """True once for each operator-forced activation since the last call. Real sensors return False."""
+
 
 class EdgeLatch:
     """Carries rising edges from a hardware thread into the event loop."""

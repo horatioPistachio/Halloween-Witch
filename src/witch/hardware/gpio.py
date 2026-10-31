@@ -66,6 +66,9 @@ class GpioMotionSensor:
         while self.is_active:
             await asyncio.sleep(_STILL_POLL_S)
 
+    def take_manual_trigger(self) -> bool:
+        return False
+
 
 class GpioOutput(ActivationOutput):
     """A GPIO output that drives the witch's activation input."""
