@@ -142,7 +142,7 @@ Troubleshooting:
 - No audio under systemd: add the service user to the `audio` group and set `WITCH_INPUT_DEVICE` / `WITCH_OUTPUT_DEVICE`.
 - Witch speaks over the jump or before it lands: set `WITCH_OPENING_DELAY_MS` (for example `800`).
 - She triggers too easily: set the PIR's hold time to the minimum, then raise `WITCH_PRESENCE_THRESHOLD_S`. A PIR that stays high for several seconds after each blip counts as that much presence. If she never triggers in a busy room, lower the threshold or `WITCH_PRESENCE_DECAY`.
-- Ambient sound never plays: check TTS is on, `WITCH_AMBIENT_INTERVAL_S` is not `0`, and look for `ambient>` warnings in the log. The first syllable may be clipped if the Bluetooth speaker was asleep.
+- Ambient sound never plays: check TTS is on, `WITCH_AMBIENT_INTERVAL_S` is not `0`, and look for `ambient>` warnings in the log. The first syllable may be clipped if the Bluetooth speaker was asleep: raise `WITCH_SPEAKER_LEAD_IN_MS` (default 800), the silence played ahead of speech after the speaker has been idle.
 - First opening after a quiet spell is slow but quick afterwards: the prompt cache was cold. This is expected.
 - `cached 0` on every activation: something changed the prefix. Check that `WITCH_PERSONA` and the prompt text are unchanged between runs.
 - Witch says "stage cue" aloud or describes the cue: tighten the rule in `_build_prompt` in `src/witch/persona.py`.

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import threading
+import time
 from collections.abc import AsyncIterator
 
 import sounddevice as sd
@@ -19,6 +20,8 @@ log = logging.getLogger(__name__)
 PREBUFFER_MS = 100
 PREBUFFER_BYTES = SAMPLE_RATE * PREBUFFER_MS // 1000 * 2
 SILENCE_TAIL = bytes(PREBUFFER_BYTES)
+# Within this window of the last playback the speaker link is assumed awake, so no lead-in is added.
+LEAD_IN_IDLE_S = 3.0
 
 
 def list_output_devices() -> list[tuple[int, str, int]]:
@@ -48,6 +51,8 @@ class SpeakerSink:
         self._device_rate = SAMPLE_RATE
         self._stream: sd.RawOutputStream | None = None
         self._lock = threading.Lock()
+        self._lead_in_ms = settings.speaker_lead_in_ms
+        self._last_active = float("-inf")
 
     async def __aenter__(self) -> SpeakerSink:
         self._stream = self._open()
@@ -62,6 +67,11 @@ class SpeakerSink:
         stream = self._stream
         pending = bytearray()
         started = False
+        lead_in: asyncio.Task[None] | None = None
+        if self._lead_in_ms > 0 and time.monotonic() - self._last_active > LEAD_IN_IDLE_S:
+            # Runs while the first chunks are still being fetched, so synthesis latency overlaps it.
+            silence = bytes(SAMPLE_RATE * self._lead_in_ms // 1000 * 2)
+            lead_in = asyncio.create_task(self._write(stream, silence))
         try:
             async for chunk in chunks:
                 if started:
@@ -70,12 +80,21 @@ class SpeakerSink:
                 pending += chunk
                 if len(pending) >= PREBUFFER_BYTES:
                     started = True
+                    if lead_in is not None:
+                        await lead_in
+                        lead_in = None
                     await self._write(stream, bytes(pending))
                     pending.clear()
+            if lead_in is not None:
+                await lead_in
+                lead_in = None
             if pending:
                 await self._write(stream, bytes(pending))
             await self._write(stream, SILENCE_TAIL)
+            self._last_active = time.monotonic()
         except BaseException:
+            if lead_in is not None:
+                lead_in.cancel()
             self._abort()
             raise
 

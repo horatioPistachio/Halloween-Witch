@@ -31,6 +31,7 @@ DEFAULT_VOICE = "witch"
 DEFAULT_VOICE_ID = VOICES[DEFAULT_VOICE]
 DEFAULT_TTS_MODEL = "eleven_v4_turbo"
 DEFAULT_GATE_TAIL_MS = 400
+DEFAULT_SPEAKER_LEAD_IN_MS = 800
 TAG_CAPABLE_TTS_PREFIXES = ("eleven_v3", "eleven_v4")
 TRIGGERS = ("none", "pir", "keyboard")
 HARDWARE = ("gpio", "esp32")
@@ -92,6 +93,8 @@ class Settings:
     tts_stability: float | None = None
     output_device: int | str | None = None
     gate_tail_ms: int = DEFAULT_GATE_TAIL_MS
+    # Silence played before speech after the speaker has been idle, so a Bluetooth speaker can wake.
+    speaker_lead_in_ms: int = DEFAULT_SPEAKER_LEAD_IN_MS
     trigger: str = "none"
     hardware: str = "gpio"
     esp32_port: str | None = None
@@ -227,7 +230,10 @@ def load_settings(
         tts_stability=_parse_stability(environ),
         output_device=_parse_device(output_raw),
         gate_tail_ms=_parse_int(environ, "WITCH_GATE_TAIL_MS", DEFAULT_GATE_TAIL_MS, minimum=0),
-    )
+                speaker_lead_in_ms=_parse_int(
+                    environ, "WITCH_SPEAKER_LEAD_IN_MS", DEFAULT_SPEAKER_LEAD_IN_MS, minimum=0
+                ),
+            )
 
 
 def _parse_run_control(environ: Mapping[str, str], trigger: str, hardware: str) -> dict[str, object]:
